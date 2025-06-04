@@ -320,6 +320,10 @@ namespace ams::fs {
                 AMS_ABORT("TODO");
             }
 
+            Result GetProgramId(ams::sf::Out<ncm::ProgramId> out, const fssrv::sf::FspPath &path, fs::ContentAttributes attr) {
+                static_assert(sizeof(ncm::ProgramId) == sizeof(u64));
+                R_RETURN(fsGetProgramId(reinterpret_cast<u64 *>(out.GetPointer()), path.str, static_cast<::FsContentAttributes>(static_cast<u8>(attr))));
+            }
 
             Result GetRightsIdByPath(ams::sf::Out<fs::RightsId> out, const fssrv::sf::FspPath &path) {
                 static_assert(sizeof(RightsId) == sizeof(::FsRightsId));
@@ -385,6 +389,11 @@ namespace ams::fs {
 
             /* ... */
 
+            Result GetAndClearErrorInfo(ams::sf::Out<fs::FileSystemProxyErrorInfo> out) {
+                static_assert(sizeof(fs::FileSystemProxyErrorInfo) == sizeof(::FsFileSystemProxyErrorInfo));
+                R_RETURN(::fsGetAndClearErrorInfo(reinterpret_cast<::FsFileSystemProxyErrorInfo *>(out.GetPointer())));
+            }
+
             Result RegisterProgramIndexMapInfo(const ams::sf::InBuffer &buffer, s32 count) {
                 AMS_ABORT("TODO");
             }
@@ -423,6 +432,11 @@ namespace ams::fs {
 
             Result OpenRegisteredUpdatePartition(ams::sf::Out<ams::sf::SharedPointer<fssrv::sf::IFileSystem>> out) {
                 AMS_ABORT("TODO");
+            }
+
+            Result GetAndClearMemoryReportInfo(ams::sf::Out<fs::MemoryReportInfo> out) {
+                static_assert(sizeof(fs::MemoryReportInfo) == sizeof(::FsMemoryReportInfo));
+                R_RETURN(::fsGetAndClearMemoryReportInfo(reinterpret_cast<::FsMemoryReportInfo *>(out.GetPointer())));
             }
 
             /* ... */

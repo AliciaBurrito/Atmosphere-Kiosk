@@ -59,7 +59,9 @@ namespace ams::kern::arch::arm64 {
             EsrEc_BrkInstruction            = 0b111100,
         };
 
-        constexpr u32 GetInstructionData(const KExceptionContext *context, u64 esr) {
+
+
+        u32 GetInstructionDataSupervisorMode(const KExceptionContext *context, u64 esr) {
             /* Check for THUMB usermode */
             if ((context->psr & 0x3F) == 0x30) {
                 u32 insn = *reinterpret_cast<u16 *>(context->pc & ~0x1);
@@ -74,38 +76,63 @@ namespace ams::kern::arch::arm64 {
             }
         }
 
-        void HandleUserException(KExceptionContext *context, u64 esr, u64 far, u64 afsr0, u64 afsr1, u32 data) {
-            KProcess &cur_process = GetCurrentProcess();
-            bool should_process_user_exception = KTargetSystem::IsUserExceptionHandlersEnabled();
+        u32 GetInstructionDataUserMode(const KExceptionContext *context) {
+            /* Check for THUMB usermode */
+            u32 insn = 0;
+            if ((context->psr & 0x3F) == 0x30) {
+                u16 insn_high = 0;
+                if (UserspaceAccess::CopyMemoryFromUser(std::addressof(insn_high), reinterpret_cast<u16 *>(context->pc & ~0x1), sizeof(insn_high))) {
+                    insn = insn_high;
 
-            const u64 ec = (esr >> 26) & 0x3F;
-            switch (ec) {
-                case EsrEc_Unknown:
-                case EsrEc_IllegalExecution:
-                case EsrEc_Svc32:
-                case EsrEc_Svc64:
-                case EsrEc_PcAlignmentFault:
-                case EsrEc_SpAlignmentFault:
-                case EsrEc_SErrorInterrupt:
-                case EsrEc_BreakPointEl0:
-                case EsrEc_SoftwareStepEl0:
-                case EsrEc_WatchPointEl0:
-                case EsrEc_BkptInstruction:
-                case EsrEc_BrkInstruction:
-                    break;
-                default:
-                    {
-                        /* If the fault address's state is KMemoryState_Code and the user can't read the address, force processing exception. */
-                        KMemoryInfo info;
-                        ams::svc::PageInfo pi;
-                        if (R_SUCCEEDED(cur_process.GetPageTable().QueryInfo(std::addressof(info), std::addressof(pi), far))) {
-                            if (info.GetState() == KMemoryState_Code && ((info.GetPermission() & KMemoryPermission_UserRead) != KMemoryPermission_UserRead)) {
-                                should_process_user_exception = true;
-                            }
+                    /* Check if the instruction was a THUMB mode branch prefix. */
+                    if (((insn >> 11) & 0b11110) == 0b11110) {
+                        u16 insn_low = 0;
+                        if (UserspaceAccess::CopyMemoryFromUser(std::addressof(insn_low), reinterpret_cast<u16 *>((context->pc & ~0x1) + sizeof(u16)), sizeof(insn_low))) {
+                            insn = (static_cast<u32>(insn_high) << 16) | (static_cast<u32>(insn_low) << 0);
+                        } else {
+                            insn = 0;
                         }
                     }
-                    break;
+                } else {
+                    insn = 0;
+                }
+            } else {
+                u32 insn_value = 0;
+                if (UserspaceAccess::CopyMemoryFromUser(std::addressof(insn_value), reinterpret_cast<u32 *>(context->pc), sizeof(insn_value))) {
+                    insn = insn_value;
+                } else if (KTargetSystem::IsDebugMode() && (context->pc & 3) == 0 && UserspaceAccess::CopyMemoryFromUserSize32BitWithSupervisorAccess(std::addressof(insn_value), reinterpret_cast<u32 *>(context->pc))) {
+                    insn = insn_value;
+                } else {
+                    insn = 0;
+                }
             }
+            return insn;
+        }
+
+        void HandleUserException(KExceptionContext *context, u64 raw_esr, u64 raw_far, u64 afsr0, u64 afsr1, u32 data) {
+            /* Pre-process exception registers as needed. */
+            u64 esr = raw_esr;
+            u64 far = raw_far;
+            const u64 ec = (esr >> 26) & 0x3F;
+            if (ec == EsrEc_InstructionAbortEl0 || ec == EsrEc_DataAbortEl0) {
+                /* Adjust registers if a synchronous external abort has occurred with far not valid. */
+                /*     Mask 0x03F = Low 6 bits IFSC == 0x10: "Synchronous External abort,            */
+                /*     not on translation table walk or hardware update of translation table.        */
+                /*     Mask 0x400 = FnV = "FAR Not Valid"                                            */
+                /* TODO: How would we perform this check using named register accesses? */
+                if ((esr & 0x43F) == 0x410) {
+                    /* Clear the faulting register on memory tagging exception. */
+                    far = 0;
+                } else {
+                    /* If the faulting address is a kernel address, set ISFC = 4. */
+                    if (far >= ams::svc::AddressMemoryRegion39Size) {
+                        esr = (esr & 0xFFFFFFC0) | 4;
+                    }
+                }
+            }
+
+            KProcess &cur_process = GetCurrentProcess();
+            bool should_process_user_exception = KTargetSystem::IsUserExceptionHandlersEnabled();
 
             /* In the event that we return from this exception, we want SPSR.SS set so that we advance an instruction if single-stepping. */
             #if defined(MESOSPHERE_ENABLE_HARDWARE_SINGLE_STEP)
@@ -157,7 +184,7 @@ namespace ams::kern::arch::arm64 {
                     }
 
                     /* Save the debug parameters to the current thread. */
-                    GetCurrentThread().SaveDebugParams(far, esr, data);
+                    GetCurrentThread().SaveDebugParams(raw_far, raw_esr, data);
 
                     /* Get the exception type. */
                     u32 type;
@@ -190,6 +217,13 @@ namespace ams::kern::arch::arm64 {
                             type = ams::svc::ExceptionType_InstructionAbort;
                             break;
                         case EsrEc_DataAbortEl0:
+                            /* If esr.IFSC is "Alignment Fault", return UnalignedData instead of DataAbort. */
+                            if ((esr & 0x3F) == 0b100001) {
+                                type = ams::svc::ExceptionType_UnalignedData;
+                            } else {
+                                type = ams::svc::ExceptionType_DataAbort;
+                            }
+                            break;
                         default:
                             type = ams::svc::ExceptionType_DataAbort;
                             break;
@@ -372,7 +406,6 @@ namespace ams::kern::arch::arm64 {
             ams::svc::aarch32::ExceptionInfo info32;
         } info = {};
 
-
         const bool is_aarch64 = (e_ctx->psr & 0x10) == 0;
         if (is_aarch64) {
             /* We're 64-bit. */
@@ -417,9 +450,28 @@ namespace ams::kern::arch::arm64 {
                 uintptr_t far, esr, data;
                 GetCurrentThread().RestoreDebugParams(std::addressof(far), std::addressof(esr), std::addressof(data));
 
+                /* Pre-process exception registers as needed. */
+                const u64 ec = (esr >> 26) & 0x3F;
+                if (ec == EsrEc_InstructionAbortEl0 || ec == EsrEc_DataAbortEl0) {
+                    /* Adjust registers if a synchronous external abort has occurred with far not valid. */
+                    /*     Mask 0x03F = Low 6 bits IFSC == 0x10: "Synchronous External abort,            */
+                    /*     not on translation table walk or hardware update of translation table.        */
+                    /*     Mask 0x400 = FnV = "FAR Not Valid"                                            */
+                    /* TODO: How would we perform this check using named register accesses? */
+                    if ((esr & 0x43F) == 0x410) {
+                        /* Clear the faulting register on memory tagging exception. */
+                        far = 0;
+                    } else {
+                        /* If the faulting address is a kernel address, set ISFC = 4. */
+                        if (far >= ams::svc::AddressMemoryRegion39Size) {
+                            esr = (esr & 0xFFFFFFC0) | 4;
+                        }
+                    }
+                }
+
                 /* Collect additional information based on the ec. */
                 uintptr_t params[3] = {};
-                switch ((esr >> 26) & 0x3F) {
+                switch (ec) {
                      case EsrEc_Unknown:
                      case EsrEc_IllegalExecution:
                      case EsrEc_BkptInstruction:
@@ -501,9 +553,10 @@ namespace ams::kern::arch::arm64 {
         MESOSPHERE_ASSERT(!KInterruptManager::AreInterruptsEnabled());
 
         /* Retrieve information about the exception. */
-        const u64 esr   = cpu::GetEsrEl1();
-        const u64 afsr0 = cpu::GetAfsr0El1();
-        const u64 afsr1 = cpu::GetAfsr1El1();
+        const bool is_user_mode = (context->psr & 0xF) == 0;
+        const u64 esr           = cpu::GetEsrEl1();
+        const u64 afsr0         = cpu::GetAfsr0El1();
+        const u64 afsr1         = cpu::GetAfsr1El1();
         u64 far  = 0;
         u32 data = 0;
 
@@ -514,7 +567,12 @@ namespace ams::kern::arch::arm64 {
             case EsrEc_BkptInstruction:
             case EsrEc_BrkInstruction:
                 far   = context->pc;
-                data = GetInstructionData(context, esr);
+                /* NOTE: Nintendo always calls GetInstructionDataUserMode. */
+                if (is_user_mode) {
+                    data = GetInstructionDataUserMode(context);
+                } else {
+                    data = GetInstructionDataSupervisorMode(context, esr);
+                }
                 break;
             case EsrEc_Svc32:
                 if (context->psr & 0x20) {
@@ -543,7 +601,6 @@ namespace ams::kern::arch::arm64 {
 
         /* Verify that spsr's M is allowable (EL0t). */
         {
-            const bool is_user_mode = (context->psr & 0xF) == 0;
             if (is_user_mode) {
                 /* If the user disable count is set, we may need to pin the current thread. */
                 if (GetCurrentThread().GetUserDisableCount() != 0 && GetCurrentProcess().GetPinnedThread(GetCurrentCoreId()) == nullptr) {

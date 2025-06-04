@@ -41,7 +41,7 @@ namespace ams::kern {
             /* Nintendo uses std::mt19937_t for randomness. */
             /* To save space (and because mt19337_t isn't secure anyway), */
             /* We will use TinyMT. */
-            static constinit inline bool         s_initialized_random_generator;
+            static constinit inline bool         s_uninitialized_random_generator{true};
             static constinit inline util::TinyMT s_random_generator{util::ConstantInitialize};
             static constinit inline KSpinLock    s_random_lock;
         public:
@@ -53,7 +53,7 @@ namespace ams::kern {
                     static size_t GetRealMemorySize();
                     static size_t GetIntendedMemorySize();
                     static KPhysicalAddress GetKernelPhysicalBaseAddress(KPhysicalAddress base_address);
-                    static void GetInitialProcessBinaryLayout(InitialProcessBinaryLayout *out);
+                    static void GetInitialProcessBinaryLayout(InitialProcessBinaryLayout *out, KPhysicalAddress kern_base_address);
                     static bool ShouldIncreaseThreadResourceLimit();
                     static void TurnOnCpu(u64 core_id, const ams::kern::init::KInitArguments *args);
                     static size_t GetApplicationPoolSize();
@@ -69,6 +69,7 @@ namespace ams::kern {
             static NOINLINE void InitializePhase1Base(u64 seed);
         public:
             /* Initialization. */
+            static NOINLINE void ConfigureKTargetSystem();
             static NOINLINE void InitializePhase1();
             static NOINLINE void InitializePhase2();
             static NOINLINE u32 GetCreateProcessMemoryPool();

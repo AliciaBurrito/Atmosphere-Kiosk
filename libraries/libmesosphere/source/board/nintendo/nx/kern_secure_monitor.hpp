@@ -98,9 +98,10 @@ namespace ams::kern::board::nintendo::nx::smc {
     };
 
     enum UserRebootType {
-        UserRebootType_None      = 0,
-        UserRebootType_ToRcm     = 1,
-        UserRebootType_ToPayload = 2,
+        UserRebootType_None         = 0,
+        UserRebootType_ToRcm        = 1,
+        UserRebootType_ToPayload    = 2,
+        UserRebootType_ToFatalError = 3,
     };
 
     void GenerateRandomBytes(void *dst, size_t size);
@@ -111,7 +112,7 @@ namespace ams::kern::board::nintendo::nx::smc {
 
     bool SetConfig(ConfigItem config_item, u64 value);
 
-    void NORETURN Panic(u32 color);
+    void ShowError(u32 color);
 
     void CallSecureMonitorFromUser(ams::svc::lp64::SecureMonitorArguments *args);
 
@@ -119,7 +120,7 @@ namespace ams::kern::board::nintendo::nx::smc {
 
         void GetConfig(u64 *out, size_t num_qwords, ConfigItem config_item);
         void GenerateRandomBytes(void *dst, size_t size);
-        bool ReadWriteRegister(u32 *out, u64 address, u32 mask, u32 value);
+        void ReadWriteRegister(u32 *out, u64 address, u32 mask, u32 value);
 
     }
 

@@ -14,9 +14,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
-#include "pm_resource_manager.hpp"
+#include "pm_spec.hpp"
 
-namespace ams::pm::resource {
+namespace ams::pm::impl {
 
     namespace {
 
@@ -82,7 +82,7 @@ namespace ams::pm::resource {
                 [svc::LimitableResource_ThreadCountMax]         = BaseAppletThreads,
                 [svc::LimitableResource_EventCountMax]          = 0,
                 [svc::LimitableResource_TransferMemoryCountMax] = 32,
-                [svc::LimitableResource_SessionCountMax]        = 5,
+                [svc::LimitableResource_SessionCountMax]        = 5 + 1, /* Add a session for atmosphere's memlet system module. */
             },
         };
 
@@ -170,10 +170,18 @@ namespace ams::pm::resource {
         }
 
         void WaitApplicationMemoryAvailable() {
+            /* Get firmware version. */
+            const auto fw_ver = hos::GetVersion();
+
+            /* On 15.0.0+, pm considers application memory to be available if there is exactly 96 MB outstanding. */
+            /* This is probably because this corresponds to the gameplay-recording memory. */
+            constexpr u64 AllowedUsedApplicationMemory = 96_MB;
+
+            /* Wait for memory to be available. */
             u64 value = 0;
             while (true) {
                 R_ABORT_UNLESS(svc::GetSystemInfo(&value, svc::SystemInfoType_UsedPhysicalMemorySize, svc::InvalidHandle, svc::PhysicalMemorySystemInfo_Application));
-                if (value == 0) {
+                if (value == 0 || (fw_ver >= hos::Version_15_0_0 && value == AllowedUsedApplicationMemory)) {
                     break;
                 }
                 os::SleepThread(TimeSpan::FromMilliSeconds(1));
@@ -201,8 +209,8 @@ namespace ams::pm::resource {
             R_SUCCEED();
         }
 
-        template<auto GetResourceLimitValueImpl>
-        ALWAYS_INLINE Result GetResourceLimitValuesImpl(ResourceLimitGroup group, pm::ResourceLimitValues *out) {
+        template<auto ImplFunction>
+        ALWAYS_INLINE Result GetResourceLimitValueImpl(pm::ResourceLimitValue *out, ResourceLimitGroup group) {
             /* Sanity check group. */
             AMS_ABORT_UNLESS(group < ResourceLimitGroup_Count);
 
@@ -211,11 +219,11 @@ namespace ams::pm::resource {
 
             /* Get values. */
             int64_t values[svc::LimitableResource_Count];
-            R_ABORT_UNLESS(GetResourceLimitValueImpl(std::addressof(values[svc::LimitableResource_PhysicalMemoryMax]),      handle, svc::LimitableResource_PhysicalMemoryMax));
-            R_ABORT_UNLESS(GetResourceLimitValueImpl(std::addressof(values[svc::LimitableResource_ThreadCountMax]),         handle, svc::LimitableResource_ThreadCountMax));
-            R_ABORT_UNLESS(GetResourceLimitValueImpl(std::addressof(values[svc::LimitableResource_EventCountMax]),          handle, svc::LimitableResource_EventCountMax));
-            R_ABORT_UNLESS(GetResourceLimitValueImpl(std::addressof(values[svc::LimitableResource_TransferMemoryCountMax]), handle, svc::LimitableResource_TransferMemoryCountMax));
-            R_ABORT_UNLESS(GetResourceLimitValueImpl(std::addressof(values[svc::LimitableResource_SessionCountMax]),        handle, svc::LimitableResource_SessionCountMax));
+            R_ABORT_UNLESS(ImplFunction(std::addressof(values[svc::LimitableResource_PhysicalMemoryMax]),      handle, svc::LimitableResource_PhysicalMemoryMax));
+            R_ABORT_UNLESS(ImplFunction(std::addressof(values[svc::LimitableResource_ThreadCountMax]),         handle, svc::LimitableResource_ThreadCountMax));
+            R_ABORT_UNLESS(ImplFunction(std::addressof(values[svc::LimitableResource_EventCountMax]),          handle, svc::LimitableResource_EventCountMax));
+            R_ABORT_UNLESS(ImplFunction(std::addressof(values[svc::LimitableResource_TransferMemoryCountMax]), handle, svc::LimitableResource_TransferMemoryCountMax));
+            R_ABORT_UNLESS(ImplFunction(std::addressof(values[svc::LimitableResource_SessionCountMax]),        handle, svc::LimitableResource_SessionCountMax));
 
             /* Set to output. */
             out->physical_memory       = values[svc::LimitableResource_PhysicalMemoryMax];
@@ -235,29 +243,35 @@ namespace ams::pm::resource {
             const u64 boost_size = normal_boost + mitm_boost;
 
             /* Don't allow all application memory to be taken away. */
-            R_UNLESS(boost_size <= g_memory_resource_limits[g_memory_arrangement][ResourceLimitGroup_Application], pm::ResultInvalidSize());
+            R_UNLESS(boost_size < g_memory_resource_limits[g_memory_arrangement][ResourceLimitGroup_Application], pm::ResultInvalidSize());
 
             const u64 new_app_size = g_memory_resource_limits[g_memory_arrangement][ResourceLimitGroup_Application] - boost_size;
             {
                 std::scoped_lock lk(g_resource_limit_lock);
 
+                const auto cur_boost_size = GetCurrentSystemMemoryBoostSize();
+
                 if (hos::GetVersion() >= hos::Version_5_0_0) {
                     /* Starting in 5.0.0, PM does not allow for only one of the sets to fail. */
-                    if (boost_size < GetCurrentSystemMemoryBoostSize()) {
+                    if (boost_size < cur_boost_size) {
                         R_TRY(svc::SetUnsafeLimit(boost_size));
                         R_ABORT_UNLESS(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_Application, new_app_size));
-                    } else {
+                    }  else if (boost_size > cur_boost_size) {
                         R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_Application, new_app_size));
                         R_ABORT_UNLESS(svc::SetUnsafeLimit(boost_size));
+                    } else {
+                        /* If the boost size is equal, there's nothing to do. */
                     }
                 } else {
                     const u64 new_sys_size = g_memory_resource_limits[g_memory_arrangement][ResourceLimitGroup_System] + boost_size;
-                    if (boost_size < GetCurrentSystemMemoryBoostSize()) {
+                    if (boost_size < cur_boost_size) {
                         R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_System,      new_sys_size));
                         R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_Application, new_app_size));
+                    } else if (boost_size > cur_boost_size) {
+                        R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_Application, new_app_size));
+                        R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_System,      new_sys_size));
                     } else {
-                        R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_Application, new_app_size));
-                        R_TRY(SetMemoryResourceLimitLimitValue(ResourceLimitGroup_System,      new_sys_size));
+                        /* If the boost size is equal, there's nothing to do. */
                     }
                 }
 
@@ -270,8 +284,7 @@ namespace ams::pm::resource {
 
     }
 
-    /* Resource API. */
-    Result InitializeResourceManager() {
+    Result InitializeSpec() {
         /* Create resource limit handles. */
         for (size_t i = 0; i < ResourceLimitGroup_Count; i++) {
             if (i == ResourceLimitGroup_System) {
@@ -451,16 +464,16 @@ namespace ams::pm::resource {
         }
     }
 
-    Result GetCurrentResourceLimitValues(ResourceLimitGroup group, pm::ResourceLimitValues *out) {
-        R_RETURN(GetResourceLimitValuesImpl<::ams::svc::GetResourceLimitCurrentValue>(group, out));
+    Result GetResourceLimitCurrentValue(pm::ResourceLimitValue *out, ResourceLimitGroup group) {
+        R_RETURN(GetResourceLimitValueImpl<::ams::svc::GetResourceLimitCurrentValue>(out, group));
     }
 
-    Result GetPeakResourceLimitValues(ResourceLimitGroup group, pm::ResourceLimitValues *out) {
-        R_RETURN(GetResourceLimitValuesImpl<::ams::svc::GetResourceLimitPeakValue>(group, out));
+    Result GetResourceLimitPeakValue(pm::ResourceLimitValue *out, ResourceLimitGroup group) {
+        R_RETURN(GetResourceLimitValueImpl<::ams::svc::GetResourceLimitPeakValue>(out, group));
     }
 
-    Result GetLimitResourceLimitValues(ResourceLimitGroup group, pm::ResourceLimitValues *out) {
-        R_RETURN(GetResourceLimitValuesImpl<::ams::svc::GetResourceLimitLimitValue>(group, out));
+    Result GetResourceLimitLimitValue(pm::ResourceLimitValue *out, ResourceLimitGroup group) {
+        R_RETURN(GetResourceLimitValueImpl<::ams::svc::GetResourceLimitLimitValue>(out, group));
     }
 
     Result GetResourceLimitValues(s64 *out_cur, s64 *out_lim, ResourceLimitGroup group, svc::LimitableResource resource) {

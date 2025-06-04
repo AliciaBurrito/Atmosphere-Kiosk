@@ -35,7 +35,7 @@ namespace ams::kern {
 
     }
 
-    void KMemoryManager::Initialize(KVirtualAddress management_region, size_t management_region_size) {
+    void KMemoryManager::Initialize(KVirtualAddress management_region, size_t management_region_size, const u32 *min_align_shifts) {
         /* Clear the management region to zero. */
         const KVirtualAddress management_region_end = management_region + management_region_size;
         std::memset(GetVoidPointer(management_region), 0, management_region_size);
@@ -108,7 +108,8 @@ namespace ams::kern {
         /* Free each region to its corresponding heap. */
         size_t reserved_sizes[MaxManagerCount] = {};
         const KPhysicalAddress ini_start = GetInitialProcessBinaryPhysicalAddress();
-        const KPhysicalAddress ini_end   = ini_start + InitialProcessBinarySizeMax;
+        const size_t ini_size            = GetInitialProcessBinarySize();
+        const KPhysicalAddress ini_end   = ini_start + ini_size;
         const KPhysicalAddress ini_last  = ini_end - 1;
         for (const auto &it : KMemoryLayout::GetPhysicalMemoryRegionTree()) {
             if (it.IsDerivedFrom(KMemoryRegionType_DramUserPool)) {
@@ -126,13 +127,13 @@ namespace ams::kern {
                     }
 
                     /* Open/reserve the ini memory. */
-                    manager.OpenFirst(ini_start, InitialProcessBinarySizeMax / PageSize);
-                    reserved_sizes[it.GetAttributes()] += InitialProcessBinarySizeMax;
+                    manager.OpenFirst(ini_start, ini_size / PageSize);
+                    reserved_sizes[it.GetAttributes()] += ini_size;
 
                     /* Free memory after the ini to the heap. */
                     if (ini_last != cur_last) {
                         MESOSPHERE_ABORT_UNLESS(cur_end != Null<KPhysicalAddress>);
-                        manager.Free(ini_end, cur_end - ini_end);
+                        manager.Free(ini_end, (cur_end - ini_end) / PageSize);
                     }
                 } else {
                     /* Ensure there's no partial overlap with the ini image. */
@@ -152,6 +153,17 @@ namespace ams::kern {
         /* Update the used size for all managers. */
         for (size_t i = 0; i < m_num_managers; ++i) {
             m_managers[i].SetInitialUsedHeapSize(reserved_sizes[i]);
+        }
+
+        /* Determine the min heap size for all pools. */
+        for (size_t i = 0; i < Pool_Count; ++i) {
+            /* Determine the min alignment for the pool in pages. */
+            const size_t min_align_pages = 1 << min_align_shifts[i];
+
+            /* Determine a heap index. */
+            if (const auto heap_index = KPageHeap::GetAlignedBlockIndex(min_align_pages, min_align_pages); heap_index >= 0) {
+                m_min_heap_indexes[i] = heap_index;
+            }
         }
     }
 
@@ -191,8 +203,19 @@ namespace ams::kern {
             return Null<KPhysicalAddress>;
         }
 
-        /* Lock the pool that we're allocating from. */
+        /* Determine the pool and direction we're allocating from. */
         const auto [pool, dir] = DecodeOption(option);
+
+        /* Check that we're allocating a correctly aligned number of pages. */
+        const size_t min_align_pages = KPageHeap::GetBlockNumPages(m_min_heap_indexes[pool]);
+        if (!util::IsAligned(num_pages, min_align_pages)) {
+            return Null<KPhysicalAddress>;
+        }
+
+        /* Update our alignment. */
+        align_pages = std::max(align_pages, min_align_pages);
+
+        /* Lock the pool that we're allocating from. */
         KScopedLightLock lk(m_pool_locks[pool]);
 
         /* Choose a heap based on our page size request. */
@@ -224,7 +247,14 @@ namespace ams::kern {
         return allocated_block;
     }
 
-    Result KMemoryManager::AllocatePageGroupImpl(KPageGroup *out, size_t num_pages, Pool pool, Direction dir, bool unoptimized, bool random) {
+    Result KMemoryManager::AllocatePageGroupImpl(KPageGroup *out, size_t num_pages, Pool pool, Direction dir, bool unoptimized, bool random, s32 min_heap_index) {
+        /* Check that we're allocating a correctly aligned number of pages. */
+        const size_t min_align_pages = KPageHeap::GetBlockNumPages(m_min_heap_indexes[pool]);
+        R_UNLESS(util::IsAligned(num_pages, min_align_pages), svc::ResultInvalidSize());
+
+        /* Adjust our min heap index to the pool minimum if needed. */
+        min_heap_index = std::max(min_heap_index, m_min_heap_indexes[pool]);
+
         /* Choose a heap based on our page size request. */
         const s32 heap_index = KPageHeap::GetBlockIndex(num_pages);
         R_UNLESS(0 <= heap_index, svc::ResultOutOfMemory());
@@ -240,7 +270,7 @@ namespace ams::kern {
         };
 
         /* Keep allocating until we've allocated all our pages. */
-        for (s32 index = heap_index; index >= 0 && num_pages > 0; index--) {
+        for (s32 index = heap_index; index >= min_heap_index && num_pages > 0; index--) {
             const size_t pages_per_alloc = KPageHeap::GetBlockNumPages(index);
             for (Impl *cur_manager = this->GetFirstManager(pool, dir); cur_manager != nullptr; cur_manager = this->GetNextManager(cur_manager, dir)) {
                 while (num_pages >= pages_per_alloc) {
@@ -273,7 +303,7 @@ namespace ams::kern {
         R_SUCCEED();
     }
 
-    Result KMemoryManager::AllocateAndOpen(KPageGroup *out, size_t num_pages, u32 option) {
+    Result KMemoryManager::AllocateAndOpen(KPageGroup *out, size_t num_pages, size_t align_pages, u32 option) {
         MESOSPHERE_ASSERT(out != nullptr);
         MESOSPHERE_ASSERT(out->GetNumPages() == 0);
 
@@ -284,8 +314,11 @@ namespace ams::kern {
         const auto [pool, dir] = DecodeOption(option);
         KScopedLightLock lk(m_pool_locks[pool]);
 
+        /* Choose a heap based on our alignment size request. */
+        const s32 heap_index = KPageHeap::GetAlignedBlockIndex(align_pages, align_pages);
+
         /* Allocate the page group. */
-        R_TRY(this->AllocatePageGroupImpl(out, num_pages, pool, dir, m_has_optimized_process[pool], true));
+        R_TRY(this->AllocatePageGroupImpl(out, num_pages, pool, dir, m_has_optimized_process[pool], true, heap_index));
 
         /* Open the first reference to the pages. */
         for (const auto &block : *out) {
@@ -325,8 +358,11 @@ namespace ams::kern {
             const bool has_optimized = m_has_optimized_process[pool];
             const bool is_optimized  = m_optimized_process_ids[pool] == process_id;
 
+            /* Always use the minimum alignment size. */
+            const s32 heap_index = 0;
+
             /* Allocate the page group. */
-            R_TRY(this->AllocatePageGroupImpl(out, num_pages, pool, dir, has_optimized && !is_optimized, false));
+            R_TRY(this->AllocatePageGroupImpl(out, num_pages, pool, dir, has_optimized && !is_optimized, false, heap_index));
 
             /* Set whether we should optimize. */
             optimized = has_optimized && is_optimized;

@@ -79,6 +79,17 @@ namespace ams::hos {
         Version_16_0_1  = ::ams::TargetFirmware_16_0_1,
         Version_16_0_2  = ::ams::TargetFirmware_16_0_2,
         Version_16_0_3  = ::ams::TargetFirmware_16_0_3,
+        Version_16_1_0  = ::ams::TargetFirmware_16_1_0,
+        Version_17_0_0  = ::ams::TargetFirmware_17_0_0,
+        Version_17_0_1  = ::ams::TargetFirmware_17_0_1,
+        Version_18_0_0  = ::ams::TargetFirmware_18_0_0,
+        Version_18_0_1  = ::ams::TargetFirmware_18_0_1,
+        Version_18_1_0  = ::ams::TargetFirmware_18_1_0,
+        Version_19_0_0  = ::ams::TargetFirmware_19_0_0,
+        Version_19_0_1  = ::ams::TargetFirmware_19_0_1,
+        Version_20_0_0  = ::ams::TargetFirmware_20_0_0,
+        Version_20_0_1  = ::ams::TargetFirmware_20_0_1,
+        Version_20_1_0  = ::ams::TargetFirmware_20_1_0,
 
         Version_Current = ::ams::TargetFirmware_Current,
 

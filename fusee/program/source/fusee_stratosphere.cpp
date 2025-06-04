@@ -24,6 +24,9 @@ namespace ams::nxboot {
 
     namespace {
 
+        constexpr u32 MesoshereMetadataLayout0Magic = util::FourCC<'M','S','S','0'>::Code;
+        constexpr u32 MesoshereMetadataLayout1Magic = util::FourCC<'M','S','S','1'>::Code;
+
         struct InitialProcessBinaryHeader {
             static constexpr u32 Magic = util::FourCC<'I','N','I','1'>::Code;
 
@@ -165,6 +168,24 @@ namespace ams::nxboot {
             FsVersion_16_0_3,
             FsVersion_16_0_3_Exfat,
 
+            FsVersion_17_0_0,
+            FsVersion_17_0_0_Exfat,
+
+            FsVersion_18_0_0,
+            FsVersion_18_0_0_Exfat,
+
+            FsVersion_18_1_0,
+            FsVersion_18_1_0_Exfat,
+
+            FsVersion_19_0_0,
+            FsVersion_19_0_0_Exfat,
+
+            FsVersion_20_0_0,
+            FsVersion_20_0_0_Exfat,
+
+            FsVersion_20_1_0,
+            FsVersion_20_1_0_Exfat,
+
             FsVersion_Count,
         };
 
@@ -245,10 +266,39 @@ namespace ams::nxboot {
 
             { 0x39, 0xEE, 0x1F, 0x1E, 0x0E, 0xA7, 0x32, 0x5D }, /* FsVersion_16_0_3 */
             { 0x62, 0xC6, 0x5E, 0xFD, 0x9A, 0xBF, 0x7C, 0x43 }, /* FsVersion_16_0_3_Exfat */
+
+            { 0x27, 0x07, 0x3B, 0xF0, 0xA1, 0xB8, 0xCE, 0x61 }, /* FsVersion_17_0_0 */
+            { 0xEE, 0x0F, 0x4B, 0xAC, 0x6D, 0x1F, 0xFC, 0x4B }, /* FsVersion_17_0_0_Exfat */
+
+            { 0x79, 0x5F, 0x5A, 0x5E, 0xB0, 0xC6, 0x77, 0x9E }, /* FsVersion_18_0_0 */
+            { 0x1E, 0x2C, 0x64, 0xB1, 0xCC, 0xE2, 0x78, 0x24 }, /* FsVersion_18_0_0_Exfat */
+
+            { 0xA3, 0x39, 0xF0, 0x1C, 0x95, 0xBF, 0xA7, 0x68 }, /* FsVersion_18_1_0 */
+            { 0x20, 0x4C, 0xBA, 0x86, 0xDE, 0x08, 0x44, 0x6A }, /* FsVersion_18_1_0_Exfat */
+
+            { 0xD9, 0x4C, 0x68, 0x15, 0xF8, 0xF5, 0x0A, 0x20 }, /* FsVersion_19_0_0 */
+            { 0xED, 0xA8, 0x78, 0x68, 0xA4, 0x49, 0x07, 0x50 }, /* FsVersion_19_0_0_Exfat */
+
+            { 0x63, 0x54, 0x96, 0x9E, 0x60, 0xA7, 0x97, 0x7B }, /* FsVersion_20_0_0 */
+            { 0x47, 0x41, 0x07, 0x10, 0x65, 0x4F, 0xA4, 0x3F }, /* FsVersion_20_0_0_Exfat */
+
+            { 0xED, 0x34, 0xB4, 0x50, 0x58, 0x4A, 0x5B, 0x43 }, /* FsVersion_20_1_0 */
+            { 0xA5, 0x1A, 0xA4, 0x92, 0x6C, 0x41, 0x87, 0x59 }, /* FsVersion_20_1_0_Exfat */
         };
 
         const InitialProcessBinaryHeader *FindInitialProcessBinary(const pkg2::Package2Header *header, const u8 *data, ams::TargetFirmware target_firmware) {
-            if (target_firmware >= ams::TargetFirmware_8_0_0) {
+            if (target_firmware >= ams::TargetFirmware_17_0_0) {
+                const u32 *data_32 = reinterpret_cast<const u32 *>(data);
+                const u32 branch_target = (data_32[0] & 0x00FFFFFF);
+                for (size_t i = branch_target; i < branch_target + 0x1000 / sizeof(u32); ++i) {
+                    const u32 ini_offset = (i * sizeof(u32)) + data_32[i];
+                    if (data_32[i + 1] == 0 && ini_offset <= header->meta.payload_sizes[0] && std::memcmp(data + ini_offset, "INI1", 4) == 0) {
+                        return reinterpret_cast<const InitialProcessBinaryHeader *>(data + ini_offset);
+                    }
+                }
+
+                return nullptr;
+            } else if (target_firmware >= ams::TargetFirmware_8_0_0) {
                 /* Try to find initial process binary. */
                 const u32 *data_32 = reinterpret_cast<const u32 *>(data);
                 for (size_t i = 0; i < 0x1000 / sizeof(u32); ++i) {
@@ -365,15 +415,6 @@ namespace ams::nxboot {
             return nullptr;
         }
 
-        InitialProcessMeta *FindInitialProcess(const se::Sha256Hash &hash) {
-            for (InitialProcessMeta *cur = std::addressof(g_initial_process_meta); cur != nullptr; cur = cur->next) {
-                if (std::memcmp(std::addressof(cur->kip_hash), std::addressof(hash), sizeof(hash)) == 0) {
-                    return cur;
-                }
-            }
-            return nullptr;
-        }
-
         u32 GetPatchSegments(const InitialProcessHeader *kip, u32 offset, size_t size) {
             /* Create segment mask. */
             u32 segments = 0;
@@ -452,78 +493,6 @@ namespace ams::nxboot {
             }
 
             meta->patches_tail = new_patch;
-        }
-
-        void AddIps24PatchToKip(InitialProcessMeta *meta, const u8 *ips, s32 size) {
-            while (size > 0) {
-                /* Read offset, stopping at EOF */
-                const u32 offset = (static_cast<u32>(ips[0]) << 16) | (static_cast<u32>(ips[1]) <<  8) | (static_cast<u32>(ips[2]) <<  0);
-                if (offset == 0x454F46) {
-                    break;
-                }
-
-                /* Read size. */
-                const u16 cur_size = (static_cast<u32>(ips[3]) << 8) | (static_cast<u32>(ips[4]) << 0);
-
-                if (cur_size > 0) {
-                    /* Add patch. */
-                    AddPatch(meta, offset, ips + 5, cur_size, false);
-
-                    /*  Advance. */
-                    ips  += (5 + cur_size);
-                    size -= (5 + cur_size);
-                } else {
-                    /* Read RLE size */
-                    const u16 rle_size = (static_cast<u32>(ips[5]) << 8) | (static_cast<u32>(ips[6]) << 0);
-
-                    /* Add patch. */
-                    AddPatch(meta, offset, ips + 7, rle_size, true);
-
-                    /*  Advance. */
-                    ips  += 8;
-                    size -= 8;
-                }
-            }
-        }
-
-        void AddIps32PatchToKip(InitialProcessMeta *meta, const u8 *ips, s32 size) {
-            while (size > 0) {
-                /* Read offset, stopping at EOF */
-                const u32 offset = (static_cast<u32>(ips[0]) << 24) | (static_cast<u32>(ips[1]) << 16) | (static_cast<u32>(ips[2]) <<  8) | (static_cast<u32>(ips[3]) <<  0);
-                if (offset == 0x45454F46) {
-                    break;
-                }
-
-                /* Read size. */
-                const u16 cur_size = (static_cast<u32>(ips[4]) << 8) | (static_cast<u32>(ips[5]) << 0);
-
-                if (cur_size > 0) {
-                    /* Add patch. */
-                    AddPatch(meta, offset, ips + 6, cur_size, false);
-
-                    /*  Advance. */
-                    ips  += (6 + cur_size);
-                    size -= (6 + cur_size);
-                } else {
-                    /* Read RLE size */
-                    const u16 rle_size = (static_cast<u32>(ips[6]) << 8) | (static_cast<u32>(ips[7]) << 0);
-
-                    /* Add patch. */
-                    AddPatch(meta, offset, ips + 8, rle_size, true);
-
-                    /*  Advance. */
-                    ips  += 9;
-                    size -= 9;
-                }
-            }
-        }
-
-        void AddIpsPatchToKip(InitialProcessMeta *meta, const u8 *ips, s32 size) {
-            if (std::memcmp(ips, "PATCH", 5) == 0) {
-                AddIps24PatchToKip(meta, ips + 5, size - 5);
-            } else if (std::memcmp(ips, "IPS32", 5) == 0) {
-                AddIps32PatchToKip(meta, ips + 5, size - 5);
-            }
         }
 
         constexpr const u8 NogcPatch0[] = {
@@ -669,6 +638,52 @@ namespace ams::nxboot {
                 case FsVersion_16_0_3_Exfat:
                     AddPatch(fs_meta, 0x191409, NogcPatch0, sizeof(NogcPatch0));
                     AddPatch(fs_meta, 0x16B9A0, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_17_0_0:
+                    AddPatch(fs_meta, 0x18B149, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x165200, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_17_0_0_Exfat:
+                    AddPatch(fs_meta, 0x195FA9, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x170060, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_18_0_0:
+                    AddPatch(fs_meta, 0x18AF49, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x164B50, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_18_0_0_Exfat:
+                    AddPatch(fs_meta, 0x195FD9, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x16FBE0, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_18_1_0:
+                    AddPatch(fs_meta, 0x18AF49, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x164B50, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_18_1_0_Exfat:
+                    AddPatch(fs_meta, 0x195FD9, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x16FBE0, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_19_0_0:
+                    AddPatch(fs_meta, 0x195C75, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x195E75, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x16F170, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_19_0_0_Exfat:
+                    AddPatch(fs_meta, 0x1A14A5, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x1A16A5, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x17A9A0, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_20_0_0:
+                case FsVersion_20_1_0:
+                    AddPatch(fs_meta, 0x1A7E25, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x1A8025, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x17C250, NogcPatch1, sizeof(NogcPatch1));
+                    break;
+                case FsVersion_20_0_0_Exfat:
+                case FsVersion_20_1_0_Exfat:
+                    AddPatch(fs_meta, 0x1B3745, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x1B3945, NogcPatch0, sizeof(NogcPatch0));
+                    AddPatch(fs_meta, 0x187B70, NogcPatch1, sizeof(NogcPatch1));
                     break;
                 default:
                     break;
@@ -863,106 +878,6 @@ namespace ams::nxboot {
             }
 
             /* TODO ams.tma2: add mount_host patches. */
-
-            /* Add generic patches. */
-            {
-                /* Create patch path. */
-                char patch_path[0x220];
-                std::memcpy(patch_path, "sdmc:/atmosphere/kip_patches", 0x1D);
-
-                fs::DirectoryHandle patch_root_dir;
-                if (R_SUCCEEDED(fs::OpenDirectory(std::addressof(patch_root_dir), patch_path))) {
-                    ON_SCOPE_EXIT { fs::CloseDirectory(patch_root_dir); };
-
-                    s64 count;
-                    fs::DirectoryEntry entries[1];
-                    while (R_SUCCEEDED(fs::ReadDirectory(std::addressof(count), entries, patch_root_dir, util::size(entries))) && count > 0) {
-                        /* Check that dir is a dir. */
-                        if (fs::GetEntryType(entries[0]) != fs::DirectoryEntryType_Directory) {
-                            continue;
-                        }
-
-                        /* For compatibility, ignore the old "default_nogc" patches. */
-                        if (std::strcmp(entries[0].file_name, "default_nogc") == 0) {
-                            continue;
-                        }
-
-                        /* Get filename length. */
-                        const int dir_len = std::strlen(entries[0].file_name);
-
-                        /* Adjust patch path. */
-                        patch_path[0x1C] = '/';
-                        std::memcpy(patch_path + 0x1D, entries[0].file_name, dir_len + 1);
-
-                        /* Try to open the patch subdirectory. */
-                        fs::DirectoryHandle patch_dir;
-                        if (R_SUCCEEDED(fs::OpenDirectory(std::addressof(patch_dir), patch_path))) {
-                            ON_SCOPE_EXIT { fs::CloseDirectory(patch_dir); };
-
-                            /* Read patches. */
-                            while (R_SUCCEEDED(fs::ReadDirectory(std::addressof(count), entries, patch_dir, util::size(entries))) && count > 0) {
-                                /* Check that file is a file. */
-                                if (fs::GetEntryType(entries[0]) != fs::DirectoryEntryType_File) {
-                                    continue;
-                                }
-
-                                /* Get filename length. */
-                                const int name_len = std::strlen(entries[0].file_name);
-
-                                /* Adjust patch path. */
-                                patch_path[0x1D + dir_len] = '/';
-                                std::memcpy(patch_path + 0x1D + dir_len + 1, entries[0].file_name, name_len + 1);
-
-                                /* Check that file is "{hex}.ips" file. */
-                                const int path_len = 0x1D + dir_len + 1 + name_len;
-                                if (name_len != 0x44 || std::memcmp(patch_path + path_len - 4, ".ips", 5) != 0) {
-                                    continue;
-                                }
-
-                                /* Check that the filename is hex. */
-                                bool valid_name = true;
-                                se::Sha256Hash patch_name = {};
-                                u32 shift = 4;
-                                for (int i = 0; i < name_len - 4; ++i) {
-                                    const char c = entries[0].file_name[i];
-
-                                    u8 val;
-                                    if ('0' <= c && c <= '9') {
-                                        val = (c - '0');
-                                    } else if ('a' <= c && c <= 'f') {
-                                        val = (c - 'a') + 10;
-                                    } else if ('A' <= c && c <= 'F') {
-                                        val = (c - 'A') + 10;
-                                    } else {
-                                        valid_name = false;
-                                        break;
-                                    }
-
-                                    patch_name.bytes[i >> 1] |= val << shift;
-                                    shift ^= 4;
-                                }
-
-                                /* Ignore invalid patches. */
-                                if (!valid_name) {
-                                    continue;
-                                }
-
-                                /* Find kip for the patch. */
-                                auto *kip_meta = FindInitialProcess(patch_name);
-                                if (kip_meta == nullptr) {
-                                    continue;
-                                }
-
-                                /* Read the ips patch. */
-                                s64 file_size;
-                                if (u8 *ips = static_cast<u8 *>(ReadFile(std::addressof(file_size), patch_path)); ips != nullptr) {
-                                    AddIpsPatchToKip(kip_meta, ips, static_cast<s32>(file_size));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         /* Return the fs version we're using. */
@@ -1011,7 +926,20 @@ namespace ams::nxboot {
         }
 
         /* Set the embedded ini pointer. */
-        std::memcpy(payload_data + 8, std::addressof(meso_size), sizeof(meso_size));
+        const u32 magic = *reinterpret_cast<const u32 *>(payload_data + 4);
+        if (magic == MesoshereMetadataLayout0Magic) {
+            std::memcpy(payload_data + 8, std::addressof(meso_size), sizeof(meso_size));
+        } else if (magic == MesoshereMetadataLayout1Magic) {
+            if (const u32 meta_offset = *reinterpret_cast<const u32 *>(payload_data + 8); meta_offset <= meso_size - sizeof(meso_size)) {
+                s64 relative_offset = meso_size - meta_offset;
+                std::memcpy(payload_data + meta_offset, std::addressof(relative_offset), sizeof(relative_offset));
+            } else {
+                ShowFatalError("Invalid mesosphere metadata layout!\n");
+            }
+        } else {
+            ShowFatalError("Unknown mesosphere metadata version!\n");
+        }
+
 
         /* Get the ini pointer. */
         InitialProcessBinaryHeader * const ini = reinterpret_cast<InitialProcessBinaryHeader *>(payload_data + meso_size);

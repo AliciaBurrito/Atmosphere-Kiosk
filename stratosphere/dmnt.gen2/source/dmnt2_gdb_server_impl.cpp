@@ -1538,11 +1538,16 @@ namespace ams::dmnt {
     }
 
     void GdbServerImpl::Q() {
-        if (false) {
-            /* TODO: QStartNoAckMode? */
+        if (ParsePrefix(m_receive_packet, "QStartNoAckMode")) {
+            this->QStartNoAckMode();
         } else {
             AMS_DMNT2_GDB_LOG_DEBUG("Not Implemented Q: %s\n", m_receive_packet);
         }
+    }
+
+    void GdbServerImpl::QStartNoAckMode() {
+        m_packet_io.SetNoAck();
+        AppendReplyOk(m_reply_cur, m_reply_end);
     }
 
     void GdbServerImpl::T() {
@@ -1919,6 +1924,7 @@ namespace ams::dmnt {
         R_SUCCEED();
     }
 
+
     void GdbServerImpl::q() {
         if (ParsePrefix(m_receive_packet, "qAttached:")) {
             this->qAttached();
@@ -2105,9 +2111,24 @@ namespace ams::dmnt {
             ParsePrefix(command, "0x");
 
             /* Decode program id. */
-            const u64 program_id = DecodeHex(command);
+            const ncm::ProgramId program_id(DecodeHex(command));
 
-            AppendReplyFormat(reply_cur, reply_end, "[TODO] wait for program id 0x%lx\n", program_id);
+            /* Wait for the process to be created. */
+            {
+                /* Get hook to creation of process with program id. */
+                os::NativeHandle h;
+                R_ABORT_UNLESS(pm::dmnt::HookToCreateProcess(std::addressof(h), program_id));
+
+                /* Wait for event. */
+                os::SystemEvent hook_event(h, true, os::InvalidNativeHandle, false, os::EventClearMode_AutoClear);
+                hook_event.Wait();
+            }
+
+            /* Get process id. */
+            R_ABORT_UNLESS(pm::dmnt::GetProcessId(std::addressof(m_wait_process_id), program_id));
+
+            /* Note that we're attaching. */
+            AppendReplyFormat(reply_cur, reply_end, "Send `attach 0x%lx` to attach.\n", m_wait_process_id.value);
         } else {
             std::memcpy(m_reply_cur, command, std::strlen(command) + 1);
             AppendReplyFormat(reply_cur, reply_end, "Unknown command `%s`\n", m_reply_cur);
@@ -2130,6 +2151,7 @@ namespace ams::dmnt {
         AppendReplyFormat(m_reply_cur, m_reply_end, ";swbreak+");
         AppendReplyFormat(m_reply_cur, m_reply_end, ";hwbreak+");
         AppendReplyFormat(m_reply_cur, m_reply_end, ";vContSupported+");
+        AppendReplyFormat(m_reply_cur, m_reply_end, ";QStartNoAckMode+");
     }
 
     void GdbServerImpl::qXfer() {

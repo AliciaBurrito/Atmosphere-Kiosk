@@ -476,10 +476,6 @@ namespace ams::kern {
             m_parent->ClearRunningThread(this);
         }
 
-        /* Signal. */
-        m_signaled = true;
-        KSynchronizationObject::NotifyAvailable();
-
         /* Call the on thread termination handler. */
         KThreadContext::OnThreadTerminating(this);
 
@@ -506,6 +502,13 @@ namespace ams::kern {
             /* Ensure that all cores are synchronized at this point. */
             cpu::SynchronizeCores(m_parent->GetPhysicalCoreMask());
         }
+
+        /* Acquire the scheduler lock. */
+        KScopedSchedulerLock sl;
+
+        /* Signal. */
+        m_signaled = true;
+        KSynchronizationObject::NotifyAvailable();
 
         /* Close the thread. */
         this->Close();
@@ -1328,7 +1331,7 @@ namespace ams::kern {
             this->StartTermination();
 
             /* Register the thread as a work task. */
-            KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_Exit, this);
+            KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_ExitThread, this);
         }
 
         MESOSPHERE_PANIC("KThread::Exit() would return");
@@ -1435,7 +1438,10 @@ namespace ams::kern {
         this->SetState(ThreadState_Waiting);
 
         /* Set our wait queue. */
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wdangling-pointer"
         m_wait_queue = queue;
+        #pragma GCC diagnostic pop
     }
 
     void KThread::NotifyAvailable(KSynchronizationObject *signaled_object, Result wait_result) {

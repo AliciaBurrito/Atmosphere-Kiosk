@@ -112,10 +112,11 @@ namespace ams::svc {
     };
 
     enum MemoryAttribute : u32 {
-        MemoryAttribute_Locked       = (1 << 0),
-        MemoryAttribute_IpcLocked    = (1 << 1),
-        MemoryAttribute_DeviceShared = (1 << 2),
-        MemoryAttribute_Uncached     = (1 << 3),
+        MemoryAttribute_Locked           = (1 << 0),
+        MemoryAttribute_IpcLocked        = (1 << 1),
+        MemoryAttribute_DeviceShared     = (1 << 2),
+        MemoryAttribute_Uncached         = (1 << 3),
+        MemoryAttribute_PermissionLocked = (1 << 4),
     };
 
     enum MemoryMapping : u32 {
@@ -189,6 +190,9 @@ namespace ams::svc {
         InfoType_ThreadTickCount                = 25,
         InfoType_IsSvcPermitted                 = 26,
         InfoType_IoRegionHint                   = 27,
+        InfoType_AliasRegionExtraSize           = 28,
+        /* ... */
+        InfoType_TransferMemoryHint             = 34,
 
         InfoType_MesosphereMeta                 = 65000,
         InfoType_MesosphereCurrentProcess       = 65001,
@@ -259,6 +263,7 @@ namespace ams::svc {
         ArbitrationType_WaitIfLessThan             = 0,
         ArbitrationType_DecrementAndWaitIfLessThan = 1,
         ArbitrationType_WaitIfEqual                = 2,
+        ArbitrationType_WaitIfEqual64              = 3,
     };
 
     enum YieldType : s64 {
@@ -435,15 +440,19 @@ namespace ams::svc {
         /* 11.x+ DisableDeviceAddressSpaceMerge. */
         CreateProcessFlag_DisableDeviceAddressSpaceMerge = (1 << 12),
 
+        /* 18.x EnableAliasRegionExtraSize. */
+        CreateProcessFlag_EnableAliasRegionExtraSize = (1 << 13),
+
         /* Mask of all flags. */
-        CreateProcessFlag_All = CreateProcessFlag_Is64Bit                  |
-                                CreateProcessFlag_AddressSpaceMask         |
-                                CreateProcessFlag_EnableDebug              |
-                                CreateProcessFlag_EnableAslr               |
-                                CreateProcessFlag_IsApplication            |
-                                CreateProcessFlag_PoolPartitionMask        |
-                                CreateProcessFlag_OptimizeMemoryAllocation |
-                                CreateProcessFlag_DisableDeviceAddressSpaceMerge,
+        CreateProcessFlag_All = CreateProcessFlag_Is64Bit                        |
+                                CreateProcessFlag_AddressSpaceMask               |
+                                CreateProcessFlag_EnableDebug                    |
+                                CreateProcessFlag_EnableAslr                     |
+                                CreateProcessFlag_IsApplication                  |
+                                CreateProcessFlag_PoolPartitionMask              |
+                                CreateProcessFlag_OptimizeMemoryAllocation       |
+                                CreateProcessFlag_DisableDeviceAddressSpaceMerge |
+                                CreateProcessFlag_EnableAliasRegionExtraSize,
     };
 
     /* Debug types. */

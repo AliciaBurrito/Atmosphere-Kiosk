@@ -19,8 +19,8 @@
 /* Necessary for calculating kernelldr size/base for initial identity mapping */
 extern "C" {
 
-	extern const u8 __start__[];
-    extern const u8 __end__[];
+	extern const u8 __bin_start__[];
+    extern const u8 __bin_end__[];
 
 }
 
@@ -45,15 +45,40 @@ namespace ams::kern::init::loader {
         constinit KInitialPageAllocator g_initial_page_allocator;
 
         constinit KInitialPageAllocator::State g_final_page_allocator_state;
-        constinit InitialProcessBinaryLayout g_initial_process_binary_layout;
+        constinit InitialProcessBinaryLayoutWithSize g_initial_process_binary_meta;
 
         constinit void *g_final_state[2];
 
-        void RelocateKernelPhysically(uintptr_t &base_address, KernelLayout *&layout) {
+        void RelocateKernelPhysically(uintptr_t &base_address, KernelLayout *&layout, const uintptr_t &ini_base_address) {
+            /* Adjust layout to be correct. */
+            {
+                const ptrdiff_t layout_offset = reinterpret_cast<uintptr_t>(layout) - base_address;
+                layout->rx_offset             += layout_offset;
+                layout->rx_end_offset         += layout_offset;
+                layout->ro_offset             += layout_offset;
+                layout->ro_end_offset         += layout_offset;
+                layout->rw_offset             += layout_offset;
+                layout->rw_end_offset         += layout_offset;
+                layout->bss_offset            += layout_offset;
+                layout->bss_end_offset        += layout_offset;
+                layout->resource_offset       += layout_offset;
+                layout->dynamic_offset        += layout_offset;
+                layout->init_array_offset     += layout_offset;
+                layout->init_array_end_offset += layout_offset;
+                layout->sysreg_offset         += layout_offset;
+            }
+
+            /* Relocate the kernel if necessary. */
             KPhysicalAddress correct_base = KSystemControl::Init::GetKernelPhysicalBaseAddress(base_address);
             if (correct_base != base_address) {
                 const uintptr_t diff = GetInteger(correct_base) - base_address;
                 const size_t size = layout->rw_end_offset;
+
+                /* Check that the new kernel doesn't overlap with us. */
+                MESOSPHERE_INIT_ABORT_UNLESS((GetInteger(correct_base) >= reinterpret_cast<uintptr_t>(__bin_end__)) || (GetInteger(correct_base) + size <= reinterpret_cast<uintptr_t>(__bin_start__)));
+
+                /* Check that the new kernel doesn't overlap with the initial process binary. */
+                MESOSPHERE_INIT_ABORT_UNLESS((ini_base_address + InitialProcessBinarySizeMax <= GetInteger(correct_base)) || (GetInteger(correct_base) + size <= ini_base_address));
 
                 /* Conversion from KPhysicalAddress to void * is safe here, because MMU is not set up yet. */
                 std::memmove(reinterpret_cast<void *>(GetInteger(correct_base)), reinterpret_cast<void *>(base_address), size);
@@ -62,20 +87,20 @@ namespace ams::kern::init::loader {
             }
         }
 
-        void SetupInitialIdentityMapping(KInitialPageTable &init_pt, uintptr_t base_address, uintptr_t kernel_size, uintptr_t page_table_region, size_t page_table_region_size, KInitialPageAllocator &allocator) {
+        void SetupInitialIdentityMapping(KInitialPageTable &init_pt, uintptr_t base_address, uintptr_t kernel_size, uintptr_t page_table_region, size_t page_table_region_size, KInitialPageAllocator &allocator, KernelSystemRegisters *sysregs) {
             /* Map in an RWX identity mapping for the kernel. */
             constexpr PageTableEntry KernelRWXIdentityAttribute(PageTableEntry::Permission_KernelRWX, PageTableEntry::PageAttribute_NormalMemory, PageTableEntry::Shareable_InnerShareable, PageTableEntry::MappingFlag_Mapped);
             init_pt.Map(base_address, kernel_size, base_address, KernelRWXIdentityAttribute, allocator, 0);
 
             /* Map in an RWX identity mapping for ourselves. */
             constexpr PageTableEntry KernelLdrRWXIdentityAttribute(PageTableEntry::Permission_KernelRWX, PageTableEntry::PageAttribute_NormalMemory, PageTableEntry::Shareable_InnerShareable, PageTableEntry::MappingFlag_Mapped);
-            const uintptr_t kernel_ldr_base = util::AlignDown(reinterpret_cast<uintptr_t>(__start__), PageSize);
-            const uintptr_t kernel_ldr_size = util::AlignUp(reinterpret_cast<uintptr_t>(__end__), PageSize) - kernel_ldr_base;
-            init_pt.Map(kernel_ldr_base, kernel_ldr_size, kernel_ldr_base, KernelRWXIdentityAttribute, allocator, 0);
+            const uintptr_t kernel_ldr_base = util::AlignDown(reinterpret_cast<uintptr_t>(__bin_start__), PageSize);
+            const uintptr_t kernel_ldr_size = util::AlignUp(reinterpret_cast<uintptr_t>(__bin_end__), PageSize) - kernel_ldr_base;
+            init_pt.Map(kernel_ldr_base, kernel_ldr_size, kernel_ldr_base, KernelLdrRWXIdentityAttribute, allocator, 0);
 
             /* Map in the page table region as RW- for ourselves. */
             constexpr PageTableEntry PageTableRegionRWAttribute(PageTableEntry::Permission_KernelRW, PageTableEntry::PageAttribute_NormalMemory, PageTableEntry::Shareable_InnerShareable, PageTableEntry::MappingFlag_Mapped);
-            init_pt.Map(page_table_region, page_table_region_size, page_table_region, KernelRWXIdentityAttribute, allocator, 0);
+            init_pt.Map(page_table_region, page_table_region_size, page_table_region, PageTableRegionRWAttribute, allocator, 0);
 
             /* Place the L1 table addresses in the relevant system registers. */
             cpu::SetTtbr0El1(init_pt.GetTtbr0L1TableAddress());
@@ -96,9 +121,17 @@ namespace ams::kern::init::loader {
 
             /* Setup SCTLR_EL1. */
             /* TODO: Define these bits properly elsewhere, document exactly what each bit set is doing .*/
-            constexpr u64 SctlrValue = 0x0000000034D5D925ul;
+            constexpr u64 SctlrValue = 0x0000000034D5D92Dul;
             cpu::SetSctlrEl1(SctlrValue);
             cpu::InstructionMemoryBarrier();
+
+            /* Setup the system registers for other cores. */
+            /* NOTE: sctlr_el1 on other cores has the WXN bit set (0x80000); this will be set before KernelMain() on this core. */
+            sysregs->ttbr0_el1 = init_pt.GetTtbr0L1TableAddress();
+            sysregs->ttbr1_el1 = init_pt.GetTtbr1L1TableAddress();
+            sysregs->tcr_el1   = TcrValue;
+            sysregs->mair_el1  = MairValue;
+            sysregs->sctlr_el1 = SctlrValue | 0x80000;
         }
 
         KVirtualAddress GetRandomKernelBaseAddress(KInitialPageTable &page_table, KPhysicalAddress phys_base_address, size_t kernel_size) {
@@ -138,7 +171,7 @@ namespace ams::kern::init::loader {
     uintptr_t Main(uintptr_t base_address, KernelLayout *layout, uintptr_t ini_base_address) {
         /* Relocate the kernel to the correct physical base address. */
         /* Base address and layout are passed by reference and modified. */
-        RelocateKernelPhysically(base_address, layout);
+        RelocateKernelPhysically(base_address, layout, ini_base_address);
 
         /* Validate kernel layout. */
         const uintptr_t rx_offset      = layout->rx_offset;
@@ -159,25 +192,38 @@ namespace ams::kern::init::loader {
         const uintptr_t dynamic_offset        = layout->dynamic_offset;
         const uintptr_t init_array_offset     = layout->init_array_offset;
         const uintptr_t init_array_end_offset = layout->init_array_end_offset;
+        const uintptr_t sysreg_offset         = layout->sysreg_offset;
 
         /* Determine the size of the resource region. */
         const size_t resource_region_size = KMemoryLayout::GetResourceRegionSizeForInit(KSystemControl::Init::ShouldIncreaseThreadResourceLimit());
         const uintptr_t resource_end_address  = base_address + resource_offset + resource_region_size;
 
         /* Setup the INI1 header in memory for the kernel. */
-        KSystemControl::Init::GetInitialProcessBinaryLayout(std::addressof(g_initial_process_binary_layout));
-        MESOSPHERE_INIT_ABORT_UNLESS(g_initial_process_binary_layout.address != 0);
+        {
+            /* Get the kernel layout. */
+            KSystemControl::Init::GetInitialProcessBinaryLayout(std::addressof(g_initial_process_binary_meta.layout), base_address);
 
-        if (ini_base_address != g_initial_process_binary_layout.address) {
-            /* The INI is not at the correct address, so we need to relocate it. */
+            /* If there's no desired base address, use the ini in place. */
+            if (g_initial_process_binary_meta.layout.address == 0) {
+                g_initial_process_binary_meta.layout.address = ini_base_address;
+            }
+
+
+            /* Validate and potentially relocate the INI. */
             const InitialProcessBinaryHeader *ini_header = reinterpret_cast<const InitialProcessBinaryHeader *>(ini_base_address);
-            if (ini_header->magic == InitialProcessBinaryMagic && ini_header->size <= InitialProcessBinarySizeMax) {
-                /* INI is valid, relocate it. */
-                std::memmove(reinterpret_cast<void *>(g_initial_process_binary_layout.address), ini_header, ini_header->size);
+            size_t ini_size = 0;
+            if (ini_header->magic == InitialProcessBinaryMagic && (ini_size = ini_header->size) <= InitialProcessBinarySizeMax) {
+                /* INI is valid, relocate it if necessary. */
+                if (ini_base_address != g_initial_process_binary_meta.layout.address) {
+                    std::memmove(reinterpret_cast<void *>(g_initial_process_binary_meta.layout.address), ini_header, ini_size);
+                }
             } else {
                 /* INI is invalid. Make the destination header invalid. */
-                std::memset(reinterpret_cast<void *>(g_initial_process_binary_layout.address), 0, sizeof(InitialProcessBinaryHeader));
+                std::memset(reinterpret_cast<void *>(g_initial_process_binary_meta.layout.address), 0, sizeof(InitialProcessBinaryHeader));
             }
+
+            /* Set the INI size in layout. */
+            g_initial_process_binary_meta.size = util::AlignUp(ini_size, PageSize);
         }
 
         /* We want to start allocating page tables at the end of the resource region. */
@@ -187,7 +233,10 @@ namespace ams::kern::init::loader {
         KInitialPageTable init_pt(KernelBaseRangeStart, KernelBaseRangeLast, g_initial_page_allocator);
 
         /* Setup initial identity mapping. TTBR1 table passed by reference. */
-        SetupInitialIdentityMapping(init_pt, base_address, bss_end_offset, resource_end_address, InitialPageTableRegionSizeMax, g_initial_page_allocator);
+        SetupInitialIdentityMapping(init_pt, base_address, bss_end_offset, resource_end_address, InitialPageTableRegionSizeMax, g_initial_page_allocator, reinterpret_cast<KernelSystemRegisters *>(base_address + sysreg_offset));
+
+        /* NOTE: On 19.0.0+, Nintendo calls an unknown function here on init_pt and g_initial_page_allocator. */
+        /* This is stubbed in prod KernelLdr. */
 
         /* Generate a random slide for the kernel's base address. */
         const KVirtualAddress virtual_base_address = GetRandomKernelBaseAddress(init_pt, base_address, bss_end_offset);
@@ -238,7 +287,7 @@ namespace ams::kern::init::loader {
 
         /* Setup final kernel loader state. */
         g_final_state[0] = std::addressof(g_final_page_allocator_state);
-        g_final_state[1] = std::addressof(g_initial_process_binary_layout);
+        g_final_state[1] = std::addressof(g_initial_process_binary_meta);
 
         return g_final_state;
     }

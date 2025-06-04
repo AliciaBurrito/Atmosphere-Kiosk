@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <mesosphere/kern_select_assembly_offsets.h>
+#include <mesosphere/kern_select_assembly_macros.h>
 
 /* ams::kern::arch::arm64::UserModeThreadStarter() */
 .section    .text._ZN3ams4kern4arch5arm6421UserModeThreadStarterEv, "ax", %progbits
@@ -62,7 +63,7 @@ _ZN3ams4kern4arch5arm6421UserModeThreadStarterEv:
     add sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return to EL0 */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 /* ams::kern::arch::arm64::SupervisorModeThreadStarter() */
 .section    .text._ZN3ams4kern4arch5arm6427SupervisorModeThreadStarterEv, "ax", %progbits
@@ -75,6 +76,9 @@ _ZN3ams4kern4arch5arm6427SupervisorModeThreadStarterEv:
     /* v                                                                        */
     /* | u64 argument | u64 entrypoint | KThread::StackParameters (size 0x30) | */
 
+    /* Clear the link register. */
+    mov x30, #0
+
     /* Load the argument and entrypoint. */
     ldp x0, x1, [sp], #0x10
 
@@ -83,7 +87,6 @@ _ZN3ams4kern4arch5arm6427SupervisorModeThreadStarterEv:
 
     /*  Mask I bit in DAIF */
     msr daifclr, #2
-    br x1
 
-    /* This should never execute, but Nintendo includes an ERET here. */
-    eret
+    /* Invoke the function (by calling ams::kern::arch::arm64::InvokeSupervisorModeThread(argument, entrypoint)). */
+    b _ZN3ams4kern4arch5arm6426InvokeSupervisorModeThreadEmm

@@ -1,4 +1,109 @@
 # Changelog
+## 1.9.1
++ Basic support was added for 20.1.0.
++ General system stability improvements to enhance the user's experience.
+## 1.9.0
++ Basic support was added for 20.0.0.
+  + The console should boot and atmosphère should be fully functional. However, not all modules have been fully updated to reflect the latest changes.
+    + There shouldn't be anything user visible resulting from this, but it will be addressed in a future atmosphère update.
+    + The same action item from 18.0.0 remains, and I believe in my heart of hearts that it will be addressed eventually. Someone has told me they're working on it.
+    + There aren't (to my knowledge) outstanding 19.0.0 items any more.
+  + **Please note**: As a result of changes made to nintendo's software in 20.0.0, there is roughly 10MB less memory available for custom system modules.
+    + We can only steal a maximum of 14MB from the applet pool, down from 40MB.
+    + To compensate for this, `ams.mitm`'s heap usage has been reduced by 20MB.
+      + To facilitate this, a new helper module (`memlet`) was added, so that memory may be temporarily stolen during the romfs building process.
+      + Hopefully, this results in relatively little breakage, however it is possible that user mods which replace extremely large numbers of files in The Legend of Zelda: Tears of the Kingdom may no longer function.
+        + If you are affected by this, you will see "Data abort (0x101)" when trying to launch the game with mods.
+        + Please reach out to `sciresm` on discord if this occurs to share your error report binary. However, some issues may be impossible to fix.
+        + I apologize sincerely if the issue is impossible to resolve, but I have been forced unavoidably to make compromises here, and I think this is the best balance to be struck.
+  + `exosphère` was updated to reflect the latest official secure monitor behavior.
+  + `mesosphère` was updated to reflect the latest official kernel behavior.
+  + `loader` was updated to reflect the latest official behavior.
+  + `pm` was updated to reflect the latest official behavior.
+  + `ncm` was partially updated to reflect the latest official behavior.
+  + `erpt` was updated to reflect the latest official behavior.
++ Atmosphère was updated to use GCC 15/newlib (latest devkitA64/devkitARM releases).
++ A number of improvements were made to the dmnt cheat engine.
+  + New instructions were added, and instructions were updated for improved/new functionality.
+  + Please see the documents for details -- thanks @tomvita!
++ General system stability improvements to enhance the user's experience.
+## 1.8.0
++ Basic support was added for 19.0.0.
+  + The console should boot and atmosphère should be fully functional. However, not all modules have been fully updated to reflect the latest changes.
+    + There shouldn't be anything user visible resulting from this, but it will be addressed in a future atmosphère update. There is still one action item from 18.0.0 to be addressed, as well.
+  + `exosphère` was updated to reflect the latest official secure monitor behavior.
+  + `mesosphère` was updated to reflect the latest official kernel behavior.
+  + `loader` was updated to reflect the latest official behavior.
+  + `pm` was updated to reflect the latest official behavior.
+  + `ro` was updated to reflect the latest official behavior.
++ `creport`'s file acces patterns were optimized, greatly improving performance when generating a crash report.
++ Atmosphère now uses `relr` relocations where possible.
+  + This reduces the filesize of a number of atmosphère's modules.
++ A number of minor issues were fixed and improvements were made, including:
+  + Support was fixed for running Atmosphère on newer units with specific Hynix/Micron DRAM chips.
++ General system stability improvements to enhance the user's experience.
+## 1.7.1
++ Support was added for 18.1.0.
++ Atmosphère was updated to use GCC 14/newlib (latest devkitA64/devkitARM releases).
++ Further changes were for 18.0.0:
+  + `loader` was updated to reflect the latest official behavior.
++ General system stability improvements to enhance the user's experience.
+## 1.7.0
++ Basic support was added for 18.0.0.
+  + The console should boot and atmosphère should be fully functional. However, not all modules have been fully updated to reflect the latest changes.
+    + There shouldn't be anything user visible resulting from this, but it will be addressed in a future atmosphère update, once I am not traveling so much.
+  + `exosphère` was updated to reflect the latest official secure monitor behavior.
+  + `mesosphère` was updated to reflect the latest official kernel behavior.
+  + `spl` was updated to reflect the latest official behavior.
++ `fusee`'s no longer supports applying IPS patches to KIPs.
+  + The only KIPs that are ever present are a) atmosphère modules, b) custom system modules, or c) FS.
+  + The IPS subsystem was originally designed to make nogc patches work for FS, but these are now internal, and it appears the literal only kip patches that exist are for piracy.
+    + I could not find any kip patches posted anywhere made for any other purpose.
+  + It fundamentally does not make sense to slow down boot for every normal user for a feature that has no actual use-case, especially when `fusee` seeks to be a minimal bootloader.
++ Minor improvements were made to atmosphere's gdbstub, including:
+  + Support was added for QStartNoAckMode.
+  + An issue was fixed that could cause a fatal error when creating too many breakpoints.
++ A number of minor issues were fixed and improvements were made, including:
+  + `pt-BR` (`PortugueseBr`) is now accepted as a valid language when overriding game locales.
+  + A bug was fixed that could cause atmosphere to incorrectly serialize output object IDs over IPC when using domain objects.
+  + A bug was fixed in `pm`'s resource limit boost logic that could potentially cause legitimate boosts to fail in certain circumstances.
+  + `loader`/`ro` will now throw a fatal error when using invalid IPS patches that go out of bounds, instead of corrupting memory.
+  + Support was fixed for booting using a memory configuration of half of the true available memory (e.g. forcing a 4GB configuration on an 8GB board).
++ General system stability improvements to enhance the user's experience.
+## 1.6.2
++ Support was finished for 17.0.0.
+  + `erpt` was updated to support the latest official behavior.
+  + `jpegdec` was updated to support the latest official behavior.
+  + `pm` was updated to support the latest official behavior.
++ General system stability improvements to enhance the user's experience.
+## 1.6.1
++ An improved solution to [the problem that would cause consoles which had previously re-built their SYSTEM partition to brick on update-to-17.0.0](https://gist.github.com/SciresM/2ddb708c812ed585c4d99f54e25205ff) was added.
+  + In particular, booting atmosphère will now automatically detect the problem and unbrick any consoles which have fallen into this state.
++ Some improvements were made to `haze`, including:
+  + Performance was greatly improved:
+    + Support was added for GetObjectPropList, which decreases the amount of requests made by ~8x.
+    + Haze now performs rendering on the GPU, freeing up the CPU to respond to requests in a more timely manner.
+  + An issue was fixed with how `haze` configures `bMaxPacketSize0` which improves support for USB3.
++ General system stability improvements to enhance the user's experience.
+## 1.6.0
++ Basic support was added for 17.0.0.
+  + The console should boot and atmosphère should be fully functional. However, not all modules have been fully updated to reflect the latest changes.
+    + There shouldn't be anything user visible resulting from this, but it will be addressed in a soon-to-come atmosphère update.
+  + `exosphère` was updated to reflect the latest official secure monitor behavior.
+  + `mesosphère` was updated to reflect the latest official kernel behavior.
+  + `ncm` was updated to reflect the latest official behavior.
+  + `erpt` was partially updated to support the latest official behavior.
++ Atmosphere's gdbstub now supports waiting to attach to a specific program id on launch (as opposed to any application).
+  + The monitor command for this is `monitor wait <hex program id>`, where program id can optionally have an `0x` prefix.
++ Support was added to `haze` for editing files in-place and performing 64-bit transfers (files larger than 4 GB).
++ `bpc.mitm` was enabled on Mariko units, and now triggers pmic-based shutdowns/reboots (thanks @CTCaer).
+  + This should cause the console to no longer wake ~15 seconds after shutdown on Mariko.
++ A number of minor issues were fixed and improvements were made, including:
+  + A workaround was added for a change in 17.0.0 that would cause consoles which had previously re-built their SYSTEM partition to brick on update-to-17.0.0.
++ General system stability improvements to enhance the user's experience.
+## 1.5.5
++ Support was added for 16.1.0.
++ General system stability improvements to enhance the user's experience.
 ## 1.5.4
 + Experimental new functionality was implemented to prevent crashing when building romfs for certain games with obscene file counts.
   + This includes both Fire Emblem: Engage (~190000 files), and The Legend of Zelda: Tears of the Kingdom (~300000) files.

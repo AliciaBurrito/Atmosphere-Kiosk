@@ -19,6 +19,7 @@
 #include "erpt_srv_journal.hpp"
 #include "erpt_srv_context_record.hpp"
 #include "erpt_srv_context.hpp"
+#include "erpt_srv_fs_info.hpp"
 
 namespace ams::erpt::srv {
 
@@ -164,7 +165,7 @@ namespace ams::erpt::srv {
                     if (R_FAILED(svc::GetResourceLimitLimitValue(std::addressof(limit_value), handle, svc::LimitableResource_##__RESOURCE__##Max))) { \
                         return;                                                                                                                       \
                     }                                                                                                                                 \
-                    if (R_FAILED(record->Add(FieldId_System##__RESOURCE__##Limit, limit_value))) {                                                    \
+                    if (R_FAILED(record->Add(FieldId_System##__RESOURCE__##Limit, limit_value))) {                                             \
                         return;                                                                                                                       \
                     }                                                                                                                                 \
                 } while (0)
@@ -203,7 +204,7 @@ namespace ams::erpt::srv {
                     if (R_FAILED(svc::GetResourceLimitPeakValue(std::addressof(peak_value), handle, svc::LimitableResource_##__RESOURCE__##Max))) { \
                         return;                                                                                                                     \
                     }                                                                                                                               \
-                    if (R_FAILED(record->Add(FieldId_System##__RESOURCE__##Peak, peak_value))) {                                                    \
+                    if (R_FAILED(record->Add(FieldId_System##__RESOURCE__##Peak, peak_value))) {                                             \
                         return;                                                                                                                     \
                     }                                                                                                                               \
                 } while (0)
@@ -276,7 +277,7 @@ namespace ams::erpt::srv {
         void SaveSyslogReportIfRequired(const ContextEntry *ctx, const ReportId &report_id) {
             bool needs_save_syslog = true;
             for (u32 i = 0; i < ctx->field_count; i++) {
-                static_assert(FieldToTypeMap[FieldId_HasSyslogFlag] == FieldType_Bool);
+                static_assert(FieldIndexToTypeMap[*FindFieldIndex(FieldId_HasSyslogFlag)] == FieldType_Bool);
                 if (ctx->fields[i].id == FieldId_HasSyslogFlag && !ctx->fields[i].value_bool) {
                     needs_save_syslog = false;
                     break;
@@ -413,7 +414,7 @@ namespace ams::erpt::srv {
         R_SUCCEED();
     }
 
-    Result Reporter::CreateReport(ReportType type, Result ctx_result, const ContextEntry *ctx, const u8 *data, u32 data_size, const ReportMetaData *meta, const AttachmentId *attachments, u32 num_attachments) {
+    Result Reporter::CreateReport(ReportType type, Result ctx_result, const ContextEntry *ctx, const u8 *data, u32 data_size, const ReportMetaData *meta, const AttachmentId *attachments, u32 num_attachments, erpt::CreateReportOptionFlagSet flags, const ReportId *specified_report_id) {
         /* Create a context record for the report. */
         auto record = std::make_unique<ContextRecord>();
         R_UNLESS(record != nullptr, erpt::ResultOutOfMemory());
@@ -422,10 +423,10 @@ namespace ams::erpt::srv {
         R_TRY(record->Initialize(ctx, data, data_size));
 
         /* Create the report. */
-        R_RETURN(CreateReport(type, ctx_result, std::move(record), meta, attachments, num_attachments));
+        R_RETURN(CreateReport(type, ctx_result, std::move(record), meta, attachments, num_attachments, flags, specified_report_id));
     }
 
-    Result Reporter::CreateReport(ReportType type, Result ctx_result, std::unique_ptr<ContextRecord> record, const ReportMetaData *meta, const AttachmentId *attachments, u32 num_attachments) {
+    Result Reporter::CreateReport(ReportType type, Result ctx_result, std::unique_ptr<ContextRecord> record, const ReportMetaData *meta, const AttachmentId *attachments, u32 num_attachments, erpt::CreateReportOptionFlagSet flags, const ReportId *specified_report_id) {
         /* Clear the automatic categories, when we're done with our report. */
         ON_SCOPE_EXIT {
             Context::ClearContext(CategoryId_ErrorInfo);
@@ -443,7 +444,7 @@ namespace ams::erpt::srv {
         R_TRY(SubmitReportDefaults(ctx));
 
         /* Generate report id. */
-        const ReportId report_id = { .uuid = util::GenerateUuid() };
+        const ReportId report_id = specified_report_id ? *specified_report_id : ReportId{ .uuid = util::GenerateUuid() };
 
         /* Get posix timestamps. */
         time::PosixTime timestamp_user;
@@ -457,7 +458,7 @@ namespace ams::erpt::srv {
         SaveSyslogReportIfRequired(ctx, report_id);
 
         /* Submit report contexts. */
-        R_TRY(SubmitReportContexts(report_id, type, ctx_result, std::move(record), timestamp_user, timestamp_network));
+        R_TRY(SubmitReportContexts(report_id, type, ctx_result, std::move(record), timestamp_user, timestamp_network, flags));
 
         /* Link attachments to the report. */
         R_TRY(LinkAttachments(report_id, attachments, num_attachments));
@@ -468,7 +469,7 @@ namespace ams::erpt::srv {
         R_SUCCEED();
     }
 
-    Result Reporter::SubmitReportContexts(const ReportId &report_id, ReportType type, Result ctx_result, std::unique_ptr<ContextRecord> record, const time::PosixTime &timestamp_user, const time::PosixTime &timestamp_network) {
+    Result Reporter::SubmitReportContexts(const ReportId &report_id, ReportType type, Result ctx_result, std::unique_ptr<ContextRecord> record, const time::PosixTime &timestamp_user, const time::PosixTime &timestamp_network, erpt::CreateReportOptionFlagSet flags) {
         /* Create automatic record. */
         auto auto_record = std::make_unique<ContextRecord>(CategoryId_ErrorInfoAuto, 0x300);
         R_UNLESS(auto_record != nullptr, erpt::ResultOutOfMemory());
@@ -529,6 +530,17 @@ namespace ams::erpt::srv {
         #if defined(ATMOSPHERE_OS_HORIZON)
         SubmitResourceLimitContexts();
         #endif
+
+        /* If we should, submit fs info. */
+        #if defined(ATMOSPHERE_OS_HORIZON)
+        if (hos::GetVersion() >= hos::Version_17_0_0 && flags.Test<CreateReportOptionFlag::SubmitFsInfo>()) {
+            /* NOTE: Nintendo ignores the result of this call. */
+            SubmitFsInfo();
+        }
+        #else
+        AMS_UNUSED(flags);
+        #endif
+
 
         R_SUCCEED();
     }

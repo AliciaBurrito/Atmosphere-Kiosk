@@ -64,7 +64,7 @@ _ZN3ams4kern4arch5arm6422EL1IrqExceptionHandlerEv:
     add     sp, sp, #(8 * 24)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 /* ams::kern::arch::arm64::EL0A64IrqExceptionHandler() */
 .section    .text._ZN3ams4kern4arch5arm6425EL0A64IrqExceptionHandlerEv, "ax", %progbits
@@ -150,7 +150,7 @@ _ZN3ams4kern4arch5arm6425EL0A64IrqExceptionHandlerEv:
     add     sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 /* ams::kern::arch::arm64::EL0A32IrqExceptionHandler() */
 .section    .text._ZN3ams4kern4arch5arm6425EL0A32IrqExceptionHandlerEv, "ax", %progbits
@@ -218,7 +218,7 @@ _ZN3ams4kern4arch5arm6425EL0A32IrqExceptionHandlerEv:
     add     sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 /* ams::kern::arch::arm64::EL0SynchronousExceptionHandler() */
 .section    .text._ZN3ams4kern4arch5arm6430EL0SynchronousExceptionHandlerEv, "ax", %progbits
@@ -331,7 +331,7 @@ _ZN3ams4kern4arch5arm6430EL0SynchronousExceptionHandlerEv:
     add     sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 4:  /* SVC from aarch32. */
     ldp x16, x17, [sp], 16
@@ -354,21 +354,12 @@ _ZN3ams4kern4arch5arm6430EL0SynchronousExceptionHandlerEv:
     mrs     x17, ttbr0_el1
     and     x17, x17, #(0xFFFF << 48)
 
-    /* Check if FAR is valid by examining the FnV bit. */
-    tbnz    x16, #10, 8f
-
-    /* FAR is valid, so we can invalidate the address it holds. */
+    /* Invalidate the address held by FAR (and assume it is valid). */
     mrs     x16, far_el1
     lsr     x16, x16, #12
     orr     x17, x16, x17
     tlbi    vae1, x17
-    b       9f
 
-8:  /* There's a TLB conflict and FAR isn't valid. */
-    /* Invalidate the entire TLB. */
-    tlbi    aside1, x17
-
-9:  /* Return from a TLB conflict. */
     /* Ensure instruction consistency. */
     dsb     ish
     isb
@@ -377,7 +368,7 @@ _ZN3ams4kern4arch5arm6430EL0SynchronousExceptionHandlerEv:
     ldp x16, x17, [sp], 16
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 
 /* ams::kern::arch::arm64::EL1SynchronousExceptionHandler() */
@@ -441,9 +432,10 @@ _ZN3ams4kern4arch5arm6430EL1SynchronousExceptionHandlerEv:
     /* Return false. */
     mov     x0, #0x0
     msr     elr_el1, x30
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 2:  /* The exception wasn't an triggered by copying memory from userspace. */
+    /* NOTE: The following is, as of 19.0.0, now ifdef'd out on NX non-debug kernel. */
     ldr     x0, [sp, #8]
     ldr     x1, [sp, #16]
 
@@ -484,33 +476,16 @@ _ZN3ams4kern4arch5arm6430EL1SynchronousExceptionHandlerEv:
     b       3b
 
 4:  /* Check if there's a TLB conflict that caused the abort. */
-    /* NOTE: There is a Nintendo bug in this code that we correct. */
-    /* Nintendo compares the low 6 bits of x0 without restoring the value. */
-    /* They intend to check the DFSC/IFSC bits of esr_el1, but because they */
-    /* shifted esr earlier, the check is invalid and always fails. */
     mrs     x0, esr_el1
     and     x0, x0, #0x3F
     cmp     x0, #0x30
     b.ne    1b
 
-    /* Check if FAR is valid by examining the FnV bit. */
-    /* NOTE: Nintendo again has a bug here, the same as above. */
-    /* They do not refresh the value of x0, and again compare with */
-    /* the relevant bit already masked out of x0. */
-    mrs     x0, esr_el1
-    tbnz    x0, #10, 5f
-
-    /* FAR is valid, so we can invalidate the address it holds. */
+    /* Invalidate the address held by FAR (and assume it is valid). */
     mrs     x0, far_el1
     lsr     x0, x0, #12
     tlbi    vaae1, x0
-    b       6f
 
-5:  /* There's a TLB conflict and FAR isn't valid. */
-    /* Invalidate the entire TLB. */
-    tlbi    vmalle1
-
-6:  /* Return from a TLB conflict. */
     /* Ensure instruction consistency. */
     dsb     ish
     isb
@@ -519,7 +494,7 @@ _ZN3ams4kern4arch5arm6430EL1SynchronousExceptionHandlerEv:
     mrs     x0, tpidr_el1
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 
 /* ams::kern::arch::arm64::FpuAccessExceptionHandler() */
@@ -542,7 +517,7 @@ _ZN3ams4kern4arch5arm6425FpuAccessExceptionHandlerEv:
     add     sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 
 /* ams::kern::arch::arm64::EL1SystemErrorHandler() */
 .section    .text._ZN3ams4kern4arch5arm6421EL1SystemErrorHandlerEv, "ax", %progbits
@@ -680,5 +655,5 @@ _ZN3ams4kern4arch5arm6421EL0SystemErrorHandlerEv:
     add     sp, sp, #(EXCEPTION_CONTEXT_SIZE)
 
     /* Return from the exception. */
-    eret
+    ERET_WITH_SPECULATION_BARRIER
 

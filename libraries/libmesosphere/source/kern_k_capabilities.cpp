@@ -184,6 +184,11 @@ namespace ams::kern {
                 case RegionType::NoMapping:
                     break;
                 case RegionType::KernelTraceBuffer:
+                    /* NOTE: This does not match official, but is used to make pre-processing hbl capabilities in userland unnecessary. */
+                    /* If ktrace isn't enabled, allow ktrace to succeed without mapping anything. */
+                    if constexpr (!ams::kern::IsKTraceEnabled) {
+                        break;
+                    }
                 case RegionType::OnMemoryBootImage:
                 case RegionType::DTB:
                     R_TRY(f(MemoryRegions[static_cast<u32>(type)], perm));
@@ -257,7 +262,14 @@ namespace ams::kern {
         /* Validate. */
         R_UNLESS(cap.Get<DebugFlags::Reserved>() == 0, svc::ResultReservedUsed());
 
+        u32 total = 0;
+        if (cap.Get<DebugFlags::AllowDebug>()) { ++total; }
+        if (cap.Get<DebugFlags::ForceDebugProd>()) { ++total; }
+        if (cap.Get<DebugFlags::ForceDebug>()) { ++total; }
+        R_UNLESS(total <= 1, svc::ResultInvalidCombination());
+
         m_debug_capabilities.Set<DebugFlags::AllowDebug>(cap.Get<DebugFlags::AllowDebug>());
+        m_debug_capabilities.Set<DebugFlags::ForceDebugProd>(cap.Get<DebugFlags::ForceDebugProd>());
         m_debug_capabilities.Set<DebugFlags::ForceDebug>(cap.Get<DebugFlags::ForceDebug>());
         R_SUCCEED();
     }

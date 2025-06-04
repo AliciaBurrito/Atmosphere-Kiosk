@@ -23,15 +23,13 @@ namespace ams::kern::arch::arm64 {
     class KSupervisorPageTable {
         private:
             KPageTable m_page_table;
-            u64 m_ttbr0_identity[cpu::NumCores];
         public:
-            constexpr KSupervisorPageTable() : m_page_table(util::ConstantInitialize), m_ttbr0_identity() { /* ... */ }
+            constexpr KSupervisorPageTable() : m_page_table(util::ConstantInitialize) { /* ... */ }
 
             NOINLINE void Initialize(s32 core_id);
 
             void Activate() {
-                /* Activate, using process id = 0xFFFFFFFF */
-                m_page_table.Activate(0xFFFFFFFF);
+                m_page_table.ActivateKernel();
             }
 
             void ActivateForInit() {
@@ -60,8 +58,6 @@ namespace ams::kern::arch::arm64 {
             bool GetPhysicalAddress(KPhysicalAddress *out, KProcessAddress address) const {
                 return m_page_table.GetPhysicalAddress(out, address);
             }
-
-            constexpr u64 GetIdentityMapTtbr0(s32 core_id) const { return m_ttbr0_identity[core_id]; }
 
             void DumpMemoryBlocks() const {
                 return m_page_table.DumpMemoryBlocks();

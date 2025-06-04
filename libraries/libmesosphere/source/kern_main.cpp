@@ -56,8 +56,9 @@ namespace ams::kern {
             {
                 const auto &management_region = KMemoryLayout::GetPoolManagementRegion();
                 MESOSPHERE_ABORT_UNLESS(management_region.GetEndAddress() != 0);
+                static_assert(util::size(MinimumMemoryManagerAlignmentShifts) == KMemoryManager::Pool_Count);
 
-                Kernel::GetMemoryManager().Initialize(management_region.GetAddress(), management_region.GetSize());
+                Kernel::GetMemoryManager().Initialize(management_region.GetAddress(), management_region.GetSize(), MinimumMemoryManagerAlignmentShifts);
             }
 
             /* Copy the Initial Process Binary to safe memory. */
@@ -115,8 +116,9 @@ namespace ams::kern {
 
         /* Perform more core-0 specific initialization. */
         if (core_id == 0) {
-            /* Initialize the exit worker manager, so that threads and processes may exit cleanly. */
-            Kernel::GetWorkerTaskManager(KWorkerTaskManager::WorkerType_Exit).Initialize(KWorkerTaskManager::ExitWorkerPriority);
+            /* Initialize the exit worker managers, so that threads and processes may exit cleanly. */
+            Kernel::GetWorkerTaskManager(KWorkerTaskManager::WorkerType_ExitThread).Initialize(KWorkerTaskManager::ExitWorkerPriority);
+            Kernel::GetWorkerTaskManager(KWorkerTaskManager::WorkerType_ExitProcess).Initialize(KWorkerTaskManager::ExitWorkerPriority);
 
             /* Setup so that we may sleep later, and reserve memory for secure applets. */
             KSystemControl::InitializePhase2();

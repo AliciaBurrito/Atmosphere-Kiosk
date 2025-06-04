@@ -32,10 +32,17 @@ namespace ams::kern {
     struct InitialProcessBinaryLayout {
         uintptr_t address;
         uintptr_t _08;
+        uintptr_t kern_address;
+    };
+
+    struct InitialProcessBinaryLayoutWithSize {
+        InitialProcessBinaryLayout layout;
+        size_t size;
     };
 
     KPhysicalAddress GetInitialProcessBinaryPhysicalAddress();
-    void SetInitialProcessBinaryPhysicalAddress(KPhysicalAddress phys_addr);
+    size_t GetInitialProcessBinarySize();
+    void SetInitialProcessBinaryPhysicalAddress(KPhysicalAddress phys_addr, size_t size);
 
     u64 GetInitialProcessIdMin();
     u64 GetInitialProcessIdMax();

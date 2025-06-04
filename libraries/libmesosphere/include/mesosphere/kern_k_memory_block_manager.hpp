@@ -99,12 +99,15 @@ namespace ams::kern {
             Result Initialize(KProcessAddress st, KProcessAddress nd, KMemoryBlockSlabManager *slab_manager);
             void   Finalize(KMemoryBlockSlabManager *slab_manager);
 
+            static bool GetRegionForFindFreeArea(KProcessAddress *out_start, KProcessAddress *out_end, KProcessAddress region_start, size_t region_num_pages, size_t num_pages, size_t alignment, size_t offset, size_t guard_pages);
             KProcessAddress FindFreeArea(KProcessAddress region_start, size_t region_num_pages, size_t num_pages, size_t alignment, size_t offset, size_t guard_pages) const;
 
             void Update(KMemoryBlockManagerUpdateAllocator *allocator, KProcessAddress address, size_t num_pages, KMemoryState state, KMemoryPermission perm, KMemoryAttribute attr, KMemoryBlockDisableMergeAttribute set_disable_attr, KMemoryBlockDisableMergeAttribute clear_disable_attr);
             void UpdateLock(KMemoryBlockManagerUpdateAllocator *allocator, KProcessAddress address, size_t num_pages, MemoryBlockLockFunction lock_func, KMemoryPermission perm);
 
-            void UpdateIfMatch(KMemoryBlockManagerUpdateAllocator *allocator, KProcessAddress address, size_t num_pages, KMemoryState test_state, KMemoryPermission test_perm, KMemoryAttribute test_attr, KMemoryState state, KMemoryPermission perm, KMemoryAttribute attr);
+            void UpdateIfMatch(KMemoryBlockManagerUpdateAllocator *allocator, KProcessAddress address, size_t num_pages, KMemoryState test_state, KMemoryPermission test_perm, KMemoryAttribute test_attr, KMemoryState state, KMemoryPermission perm, KMemoryAttribute attr, KMemoryBlockDisableMergeAttribute set_disable_attr, KMemoryBlockDisableMergeAttribute clear_disable_attr);
+
+            void UpdateAttribute(KMemoryBlockManagerUpdateAllocator *allocator, KProcessAddress address, size_t num_pages, u32 mask, u32 attr);
 
             iterator FindIterator(KProcessAddress address) const {
                 return m_memory_block_tree.find(KMemoryBlock(util::ConstantInitialize, address, 1, KMemoryState_Free, KMemoryPermission_None, KMemoryAttribute_None));

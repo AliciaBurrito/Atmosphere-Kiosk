@@ -27,11 +27,24 @@ namespace ams::ldr {
 
         constinit ArgumentStore g_argument_store;
 
+        bool IsValidProgramAttributes(const ldr::ProgramAttributes &attrs) {
+            /* Check that the attributes are valid; on NX, this means Platform = NX + no content attrs. */
+            if (attrs.platform != ncm::ContentMetaPlatform::Nx) {
+                return false;
+            }
+            if (attrs.content_attributes != fs::ContentAttributes_None) {
+                return false;
+            }
+
+            return true;
+        }
+
     }
 
 
-    Result LoaderService::CreateProcess(os::NativeHandle *out, PinId pin_id, u32 flags, os::NativeHandle resource_limit) {
-        /* Declare program path, which we'll need later. */
+    Result LoaderService::CreateProcess(os::NativeHandle *out, PinId pin_id, u32 flags, os::NativeHandle resource_limit, const ProgramAttributes &attrs) {
+        /* Check that the program attributes are valid. */
+        R_UNLESS(IsValidProgramAttributes(attrs), ldr::ResultInvalidProgramAttributes());
 
         /* Get the location and override status. */
         ncm::ProgramLocation loc;
@@ -40,25 +53,28 @@ namespace ams::ldr {
 
         /* Get the program path. */
         char path[fs::EntryNameLengthMax];
-        R_TRY(GetProgramPath(path, sizeof(path), loc));
+        R_TRY(GetProgramPath(path, sizeof(path), loc, attrs));
         path[sizeof(path) - 1] = '\x00';
 
         /* Create the process. */
-        R_RETURN(ldr::CreateProcess(out, pin_id, loc, override_status, path, g_argument_store.Get(loc.program_id), flags, resource_limit));
+        R_RETURN(ldr::CreateProcess(out, pin_id, loc, override_status, path, g_argument_store.Get(loc.program_id), flags, resource_limit, attrs));
     }
 
-    Result LoaderService::GetProgramInfo(ProgramInfo *out, cfg::OverrideStatus *out_status, const ncm::ProgramLocation &loc) {
+    Result LoaderService::GetProgramInfo(ProgramInfo *out, cfg::OverrideStatus *out_status, const ncm::ProgramLocation &loc, const ProgramAttributes &attrs) {
+        /* Check that the program attributes are valid. */
+        R_UNLESS(IsValidProgramAttributes(attrs), ldr::ResultInvalidProgramAttributes());
+
         /* Zero output. */
         std::memset(out, 0, sizeof(*out));
 
         /* Get the program path. */
         char path[fs::EntryNameLengthMax];
-        R_TRY(GetProgramPath(path, sizeof(path), loc));
+        R_TRY(GetProgramPath(path, sizeof(path), loc, attrs));
         path[sizeof(path) - 1] = '\x00';
 
         /* Get the program info. */
         cfg::OverrideStatus status;
-        R_TRY(ldr::GetProgramInfo(out, std::addressof(status), loc, path));
+        R_TRY(ldr::GetProgramInfo(out, std::addressof(status), loc, path, attrs));
 
         if (loc.program_id != out->program_id) {
             /* Redirect the program path. */
@@ -67,7 +83,7 @@ namespace ams::ldr {
 
             /* Update the arguments, as needed. */
             if (const auto *entry = g_argument_store.Get(loc.program_id); entry != nullptr) {
-                R_TRY(this->SetProgramArgument(new_loc.program_id, entry->argument, entry->argument_size));
+                R_TRY(g_argument_store.Set(new_loc.program_id, entry->argument, entry->argument_size));
             }
         }
 

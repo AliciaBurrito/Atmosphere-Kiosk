@@ -51,7 +51,7 @@ namespace ams::kern {
                 }
             }
 
-            /* Wait for all children threads to terminate.*/
+            /* Wait for all children threads to terminate. */
             while (true) {
                 /* Get the next child. */
                 KThread *cur_child = nullptr;
@@ -220,18 +220,8 @@ namespace ams::kern {
             m_running_thread_switch_counts[i] = 0;
         }
 
-        /* Set max memory based on address space type. */
-        switch ((params.flags & ams::svc::CreateProcessFlag_AddressSpaceMask)) {
-            case ams::svc::CreateProcessFlag_AddressSpace32Bit:
-            case ams::svc::CreateProcessFlag_AddressSpace64BitDeprecated:
-            case ams::svc::CreateProcessFlag_AddressSpace64Bit:
-                m_max_process_memory = m_page_table.GetHeapRegionSize();
-                break;
-            case ams::svc::CreateProcessFlag_AddressSpace32BitWithoutAlias:
-                m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
-                break;
-            MESOSPHERE_UNREACHABLE_DEFAULT_CASE();
-        }
+        /* Set max memory. */
+        m_max_process_memory = KAddressSpaceInfo::GetAddressSpaceSize(static_cast<ams::svc::CreateProcessFlag>(m_flags), KAddressSpaceInfo::Type_Heap);
 
         /* Generate random entropy. */
         KSystemControl::GenerateRandom(m_entropy, util::size(m_entropy));
@@ -263,28 +253,45 @@ namespace ams::kern {
         MESOSPHERE_ASSERT(res_limit != nullptr);
         MESOSPHERE_ABORT_UNLESS((params.code_num_pages * PageSize) / PageSize == static_cast<size_t>(params.code_num_pages));
 
-        /* Determine is application. */
-        const bool is_app = (params.flags & ams::svc::CreateProcessFlag_IsApplication) != 0;
-
         /* Set members. */
-        m_memory_pool               = pool;
-        m_resource_limit            = res_limit;
-        m_system_resource           = std::addressof(is_app ? Kernel::GetApplicationSystemResource() : Kernel::GetSystemSystemResource());
-        m_is_immortal               = immortal;
+        m_memory_pool                            = pool;
+        m_resource_limit                         = res_limit;
+        m_is_default_application_system_resource = false;
+        m_is_immortal                            = immortal;
 
-        /* Open reference to our system resource. */
-        m_system_resource->Open();
+        /* Setup our system resource. */
+        if (const size_t system_resource_num_pages = params.system_resource_num_pages; system_resource_num_pages != 0) {
+            /* Create a secure system resource. */
+            KSecureSystemResource *secure_resource = KSecureSystemResource::Create();
+            R_UNLESS(secure_resource != nullptr, svc::ResultOutOfResource());
+
+            ON_RESULT_FAILURE { secure_resource->Close(); };
+
+            /* Initialize the secure resource. */
+            R_TRY(secure_resource->Initialize(system_resource_num_pages * PageSize, m_resource_limit, m_memory_pool));
+
+            /* Set our system resource. */
+            m_system_resource = secure_resource;
+        } else {
+            /* Use the system-wide system resource. */
+            const bool is_app = (params.flags & ams::svc::CreateProcessFlag_IsApplication);
+            m_system_resource = std::addressof(is_app ? Kernel::GetApplicationSystemResource() : Kernel::GetSystemSystemResource());
+
+            m_is_default_application_system_resource = is_app;
+
+            /* Open reference to the system resource. */
+            m_system_resource->Open();
+        }
+
+        /* Ensure we clean up our secure resource, if we fail. */
+        ON_RESULT_FAILURE { m_system_resource->Close(); };
 
         /* Setup page table. */
-        /* NOTE: Nintendo passes process ID despite not having set it yet. */
-        /* This goes completely unused, but even so... */
         {
-            const auto as_type          = static_cast<ams::svc::CreateProcessFlag>(params.flags & ams::svc::CreateProcessFlag_AddressSpaceMask);
-            const bool enable_aslr      = (params.flags & ams::svc::CreateProcessFlag_EnableAslr) != 0;
-            const bool enable_das_merge = (params.flags & ams::svc::CreateProcessFlag_DisableDeviceAddressSpaceMerge) == 0;
-            R_TRY(m_page_table.Initialize(m_process_id, as_type, enable_aslr, enable_das_merge, !enable_aslr, pool, params.code_address, params.code_num_pages * PageSize, m_system_resource, res_limit));
+            const bool from_back = (params.flags & ams::svc::CreateProcessFlag_EnableAslr) == 0;
+            R_TRY(m_page_table.Initialize(static_cast<ams::svc::CreateProcessFlag>(params.flags), from_back, pool, params.code_address, params.code_num_pages * PageSize, m_system_resource, res_limit, this->GetSlabIndex()));
         }
-        ON_RESULT_FAILURE { m_page_table.Finalize(); };
+        ON_RESULT_FAILURE_2 { m_page_table.Finalize(); };
 
         /* Ensure we can insert the code region. */
         R_UNLESS(m_page_table.CanContain(params.code_address, params.code_num_pages * PageSize, KMemoryState_Code), svc::ResultInvalidMemoryRegion());
@@ -315,9 +322,10 @@ namespace ams::kern {
         MESOSPHERE_ASSERT(res_limit != nullptr);
 
         /* Set pool and resource limit. */
-        m_memory_pool               = pool;
-        m_resource_limit            = res_limit;
-        m_is_immortal               = false;
+        m_memory_pool                            = pool;
+        m_resource_limit                         = res_limit;
+        m_is_default_application_system_resource = false;
+        m_is_immortal                            = false;
 
         /* Get the memory sizes. */
         const size_t code_num_pages            = params.code_num_pages;
@@ -348,6 +356,8 @@ namespace ams::kern {
             const bool is_app = (params.flags & ams::svc::CreateProcessFlag_IsApplication);
             m_system_resource = std::addressof(is_app ? Kernel::GetApplicationSystemResource() : Kernel::GetSystemSystemResource());
 
+            m_is_default_application_system_resource = is_app;
+
             /* Open reference to the system resource. */
             m_system_resource->Open();
         }
@@ -356,13 +366,9 @@ namespace ams::kern {
         ON_RESULT_FAILURE { m_system_resource->Close(); };
 
         /* Setup page table. */
-        /* NOTE: Nintendo passes process ID despite not having set it yet. */
-        /* This goes completely unused, but even so... */
         {
-            const auto as_type          = static_cast<ams::svc::CreateProcessFlag>(params.flags & ams::svc::CreateProcessFlag_AddressSpaceMask);
-            const bool enable_aslr      = (params.flags & ams::svc::CreateProcessFlag_EnableAslr) != 0;
-            const bool enable_das_merge = (params.flags & ams::svc::CreateProcessFlag_DisableDeviceAddressSpaceMerge) == 0;
-            R_TRY(m_page_table.Initialize(m_process_id, as_type, enable_aslr, enable_das_merge, !enable_aslr, pool, params.code_address, code_size, m_system_resource, res_limit));
+            const bool from_back = (params.flags & ams::svc::CreateProcessFlag_EnableAslr) == 0;
+            R_TRY(m_page_table.Initialize(static_cast<ams::svc::CreateProcessFlag>(params.flags), from_back, pool, params.code_address, code_size, m_system_resource, res_limit, this->GetSlabIndex()));
         }
         ON_RESULT_FAILURE_2 { m_page_table.Finalize(); };
 
@@ -447,7 +453,7 @@ namespace ams::kern {
     void KProcess::Exit() {
         MESOSPHERE_ASSERT_THIS();
 
-        /* Determine whether we need to start terminating */
+        /* Determine whether we need to start terminating. */
         bool needs_terminate = false;
         {
             KScopedLightLock lk(m_state_lock);
@@ -471,7 +477,7 @@ namespace ams::kern {
             MESOSPHERE_LOG("KProcess::Exit() pid=%ld name=%-12s\n", m_process_id, m_name);
 
             /* Register the process as a work task. */
-            KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_Exit, this);
+            KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_ExitProcess, this);
         }
 
         /* Exit the current thread. */
@@ -516,7 +522,7 @@ namespace ams::kern {
                 MESOSPHERE_LOG("KProcess::Terminate() FAIL pid=%ld name=%-12s\n", m_process_id, m_name);
 
                 /* Register the process as a work task. */
-                KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_Exit, this);
+                KWorkerTaskManager::AddTask(KWorkerTaskManager::WorkerType_ExitProcess, this);
             }
         }
 
@@ -848,7 +854,7 @@ namespace ams::kern {
     size_t KProcess::GetUsedUserPhysicalMemorySize() const {
         const size_t norm_size  = m_page_table.GetNormalMemorySize();
         const size_t other_size = m_code_size + m_main_thread_stack_size;
-        const size_t sec_size   = m_system_resource->IsSecureResource() ? static_cast<KSecureSystemResource *>(m_system_resource)->CalculateRequiredSecureMemorySize() : 0;
+        const size_t sec_size   = this->GetRequiredSecureMemorySizeNonDefault();
 
         return norm_size + other_size + sec_size;
     }
@@ -856,13 +862,20 @@ namespace ams::kern {
     size_t KProcess::GetTotalUserPhysicalMemorySize() const {
         /* Get the amount of free and used size. */
         const size_t free_size = m_resource_limit->GetFreeValue(ams::svc::LimitableResource_PhysicalMemoryMax);
-        const size_t used_size = this->GetUsedUserPhysicalMemorySize();
         const size_t max_size  = m_max_process_memory;
 
+        /* Determine used size. */
+        /* NOTE: This does *not* check this->IsDefaultApplicationSystemResource(), unlike GetUsedUserPhysicalMemorySize(). */
+        const size_t norm_size  = m_page_table.GetNormalMemorySize();
+        const size_t other_size = m_code_size + m_main_thread_stack_size;
+        const size_t sec_size   = this->GetRequiredSecureMemorySize();
+        const size_t used_size  = norm_size + other_size + sec_size;
+
+        /* NOTE: These function calls will recalculate, introducing a race...it is unclear why Nintendo does it this way. */
         if (used_size + free_size > max_size) {
             return max_size;
         } else {
-            return free_size + used_size;
+            return free_size + this->GetUsedUserPhysicalMemorySize();
         }
     }
 
@@ -876,14 +889,20 @@ namespace ams::kern {
     size_t KProcess::GetTotalNonSystemUserPhysicalMemorySize() const {
         /* Get the amount of free and used size. */
         const size_t free_size = m_resource_limit->GetFreeValue(ams::svc::LimitableResource_PhysicalMemoryMax);
-        const size_t used_size = this->GetUsedUserPhysicalMemorySize();
-        const size_t sec_size  = m_system_resource->IsSecureResource() ? static_cast<KSecureSystemResource *>(m_system_resource)->CalculateRequiredSecureMemorySize() : 0;
         const size_t max_size  = m_max_process_memory;
 
+        /* Determine used size. */
+        /* NOTE: This does *not* check this->IsDefaultApplicationSystemResource(), unlike GetUsedUserPhysicalMemorySize(). */
+        const size_t norm_size  = m_page_table.GetNormalMemorySize();
+        const size_t other_size = m_code_size + m_main_thread_stack_size;
+        const size_t sec_size   = this->GetRequiredSecureMemorySize();
+        const size_t used_size  = norm_size + other_size + sec_size;
+
+        /* NOTE: These function calls will recalculate, introducing a race...it is unclear why Nintendo does it this way. */
         if (used_size + free_size > max_size) {
-            return max_size - sec_size;
+            return max_size - this->GetRequiredSecureMemorySizeNonDefault();
         } else {
-            return free_size + used_size - sec_size;
+            return free_size + this->GetUsedNonSystemUserPhysicalMemorySize();
         }
     }
 
@@ -905,7 +924,6 @@ namespace ams::kern {
         MESOSPHERE_ABORT_UNLESS(m_main_thread_stack_size == 0);
 
         /* Ensure that we're allocating a valid stack. */
-        stack_size = util::AlignUp(stack_size, PageSize);
         R_UNLESS(stack_size + m_code_size <= m_max_process_memory, svc::ResultOutOfMemory());
         R_UNLESS(stack_size + m_code_size >= m_code_size,          svc::ResultOutOfMemory());
 
